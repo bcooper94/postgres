@@ -530,6 +530,11 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 */
 	StrNCpy(relname, stmt->relation->relname, NAMEDATALEN);
 
+	if (relkind == RELKIND_MATVIEW) {
+		elog(LOG, "tablecmds.c::DefineRelation defining materialized view relname=%s",
+				relname);
+	}
+
 	/*
 	 * Check consistency of arguments
 	 */

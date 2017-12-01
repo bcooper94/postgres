@@ -3178,6 +3178,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 	List	   *rewritten = NIL;
 	ListCell   *lc1;
 
+	// TODO: Figure out where to apply rewrites to use materialized views
+
 	/*
 	 * First, recursively process any insert/update/delete statements in WITH
 	 * clauses.  (We have to do this first because the WITH clauses may get

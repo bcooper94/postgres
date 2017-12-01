@@ -62,6 +62,10 @@ typedef struct
 	BulkInsertState bistate;	/* bulk insert state */
 } DR_intorel;
 
+
+static List *matViewIntoClauses = NIL;
+
+
 /* utility functions for CTAS definition creation */
 static ObjectAddress create_ctas_internal(List *attrList, IntoClause *into);
 static ObjectAddress create_ctas_nodata(List *tlist, IntoClause *into);
@@ -89,6 +93,7 @@ create_ctas_internal(List *attrList, IntoClause *into)
 	Datum		toast_options;
 	static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
 	ObjectAddress intoRelationAddr;
+	RangeVar *rangeVar = into->rel;
 
 	/* This code supports both CREATE TABLE AS and CREATE MATERIALIZED VIEW */
 	is_matview = (into->viewQuery != NULL);
@@ -135,6 +140,28 @@ create_ctas_internal(List *attrList, IntoClause *into)
 	/* Create the "view" part of a materialized view. */
 	if (is_matview)
 	{
+		char *relpersistence;
+
+		switch (rangeVar->relpersistence) {
+		case RELPERSISTENCE_PERMANENT:
+			relpersistence = "permanent";
+			break;
+		case RELPERSISTENCE_UNLOGGED:
+			relpersistence = "unlogged";
+			break;
+		case RELPERSISTENCE_TEMP:
+			relpersistence = "temp";
+			break;
+		default:
+			relpersistence = "unknown";
+		}
+		elog(LOG,
+				"creatas.c: relname=%s, schemaname=%s, catalogname=%s, relpersistence=%s",
+				rangeVar->relname,
+				rangeVar->schemaname != NULL ? rangeVar->schemaname : "null",
+				rangeVar->catalogname != NULL ? rangeVar->catalogname : "null",
+				relpersistence);
+
 		/* StoreViewQuery scribbles on tree, so make a copy */
 		Query	   *query = (Query *) copyObject(into->viewQuery);
 
@@ -435,6 +462,13 @@ CreateIntoRelDestReceiver(IntoClause *intoClause)
 	return (DestReceiver *) self;
 }
 
+List *
+SearchApplicableMatViews(RangeVar *rangeVar)
+{
+	// TODO: Figure out how we will search for applicable materialized views
+	// to use to rewrite future queries
+}
+
 /*
  * intorel_startup --- executor startup
  */
@@ -549,12 +583,35 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 (errmsg("policies not yet implemented for this command"))));
 
+
+	if (is_matview)
+	{
+		elog(LOG, "Appending materialized view %s to list of available matviews",
+				into->rel->relname);
+		IntoClause *intoCopy = copyObject(into);
+		matViewIntoClauses = list_append_unique(matViewIntoClauses, intoCopy);
+
+		ListCell *cell;
+		IntoClause *matViewInto;
+		elog(LOG, "Materialized views stored length=%d:",
+				matViewIntoClauses->length);
+
+		foreach(cell, matViewIntoClauses)
+		{
+			matViewInto = (IntoClause *) lfirst(cell);
+			elog(LOG, "MatView relname=%s",
+					matViewInto->rel->relname);
+		}
+	}
 	/*
 	 * Tentatively mark the target as populated, if it's a matview and we're
 	 * going to fill it; otherwise, no change needed.
 	 */
 	if (is_matview && !into->skipData)
+	{
+		elog(LOG, "Creating materialized view from creatas.c::intorel_startup");
 		SetMatViewPopulatedState(intoRelationDesc, true);
+	}
 
 	/*
 	 * Fill private fields of myState for use by later routines

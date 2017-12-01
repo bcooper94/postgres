@@ -133,6 +133,9 @@
 
 static List *activeSearchPath = NIL;
 
+/* Relations in the active search path */
+static List *activeSearchPathRels = NIL;
+
 /* default place to create stuff; if InvalidOid, no default */
 static Oid	activeCreationNamespace = InvalidOid;
 
@@ -3687,8 +3690,11 @@ recomputeNamespacePath(void)
 					!list_member_oid(oidlist, namespaceId) &&
 					pg_namespace_aclcheck(namespaceId, roleid,
 										  ACL_USAGE) == ACLCHECK_OK &&
-					InvokeNamespaceSearchHook(namespaceId, false))
+					InvokeNamespaceSearchHook(namespaceId, false)) {
+					elog(LOG, "recomputeNamespacePath adding Oid=%u",
+							namespaceId);
 					oidlist = lappend_oid(oidlist, namespaceId);
+				}
 			}
 		}
 		else if (strcmp(curname, "pg_temp") == 0)
