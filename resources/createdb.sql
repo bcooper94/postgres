@@ -12,3 +12,4 @@ insert into person(name, age) values ('Bob', 29), ('Asdf', 41), ('Afdserew', 12)
 create materialized view person_avg_age as select count(*), avg(age) from person; 
 create materialized view person_count as select count(*) from person;
 --create materialized view person_age_sum as select sum(age) from person;
+create materialized view person_name_age as select name, age from person;

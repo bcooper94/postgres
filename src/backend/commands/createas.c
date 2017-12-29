@@ -48,6 +48,7 @@
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
+#include "rewrite/automatviewselect.h"
 
 
 typedef struct
@@ -462,12 +463,14 @@ CreateIntoRelDestReceiver(IntoClause *intoClause)
 	return (DestReceiver *) self;
 }
 
-List *
-SearchApplicableMatViews(RangeVar *rangeVar)
-{
-	// TODO: Figure out how we will search for applicable materialized views
-	// to use to rewrite future queries
-}
+//List *
+//SearchApplicableMatViews(RangeVar *rangeVar)
+//{
+//	// TODO: Figure out how we will search for applicable materialized views
+//	// to use to rewrite future queries
+//
+//	return NULL;
+//}
 
 /*
  * intorel_startup --- executor startup
@@ -586,22 +589,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 
 	if (is_matview)
 	{
-		elog(LOG, "Appending materialized view %s to list of available matviews",
-				into->rel->relname);
-		IntoClause *intoCopy = copyObject(into);
-		matViewIntoClauses = list_append_unique(matViewIntoClauses, intoCopy);
-
-		ListCell *cell;
-		IntoClause *matViewInto;
-		elog(LOG, "Materialized views stored length=%d:",
-				matViewIntoClauses->length);
-
-		foreach(cell, matViewIntoClauses)
-		{
-			matViewInto = (IntoClause *) lfirst(cell);
-			elog(LOG, "MatView relname=%s",
-					matViewInto->rel->relname);
-		}
+		AddMatView(into);
 	}
 	/*
 	 * Tentatively mark the target as populated, if it's a matview and we're
