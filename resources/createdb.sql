@@ -7,6 +7,12 @@ create table person (
     age int not null
 );
 
+drop table if exists employee;
+create table employee (
+    id serial primary key,
+    person_id integer
+);
+
 insert into person(name, age) values ('Bob', 29), ('Asdf', 41), ('Afdserew', 12);
 
 create materialized view person_avg_age as select count(*), avg(age) from person; 

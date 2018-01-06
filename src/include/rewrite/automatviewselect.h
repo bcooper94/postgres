@@ -11,7 +11,10 @@
 #include "postgres.h"
 
 #include "nodes/pg_list.h"
+#include "nodes/parsenodes.h"
 #include "nodes/primnodes.h"
+
+void PrintQueryInfo(Query *query);
 
 List *SearchApplicableMatViews(RangeVar *rangeVar);
 

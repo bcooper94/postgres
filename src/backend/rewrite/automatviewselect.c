@@ -9,10 +9,75 @@
 
 #include "utils/memutils.h"
 #include "nodes/value.h"
+#include "nodes/pg_list.h"
+#include "nodes/parsenodes.h"
 #include "rewrite/automatviewselect.h"
 
 static List *matViewIntoClauses = NIL;
 static MemoryContext *AutoMatViewContext = NIL;
+
+void PrintQueryInfo(Query *query)
+{
+	ListCell *rte_cell;
+	ListCell *col_cell;
+	ListCell *targetList;
+	RangeTblEntry *rte;
+
+	if (query->commandType == CMD_SELECT)
+	{
+		elog(LOG, "Found select query in pg_plan_queries");
+
+		if (query->rtable && query->rtable->length > 0)
+		{
+			elog(
+					LOG, "Select statement number of RTEs: %d, number of TargetEntries: %d",
+					query->rtable->length, query->targetList->length);
+
+			foreach(targetList, query->targetList)
+			{
+				TargetEntry *te = lfirst_node(TargetEntry, targetList);
+
+				/* junk columns don't get aliases */
+				if (te->resjunk)
+					continue;
+				elog(LOG, "RTE Target entry: %s",
+				te->resname);
+			}
+
+			foreach(rte_cell, query->rtable)
+			{
+				//						elog(LOG, "Inspecting RTE for select query");
+				//						rte = lfirst_node(RangeTblEntry, rte_cell);
+				rte = (RangeTblEntry *) lfirst(rte_cell);
+
+				switch (rte->rtekind)
+				{
+				case RTE_RELATION:
+					if (rte->eref)
+					{
+						elog(
+								LOG, "Select RTE relation alias name with %d columns: %s",
+								rte->eref->colnames->length, rte->eref->aliasname);
+
+						foreach(col_cell, rte->eref->colnames)
+						{
+							elog(LOG, "Select RTE col name: %s",
+							strVal(lfirst(col_cell)));
+						}
+					}
+					break;
+				case RTE_JOIN:
+					elog(LOG, "RTE Join found");
+					break;
+				}
+			}
+		}
+		else
+		{
+			elog(LOG, "No RTEs found in select statement");
+		}
+	}
+}
 
 List *
 SearchApplicableMatViews(RangeVar *rangeVar)
@@ -63,15 +128,21 @@ void AddMatView(IntoClause *into)
 
 	intoCopy = copyObject(into);
 	elog(LOG, "Appending materialized view %s to list of available matviews",
-			intoCopy->rel->relname);
+	intoCopy->rel->relname);
 	matViewIntoClauses = list_append_unique(matViewIntoClauses, intoCopy);
 	elog(LOG, "Materialized views stored length=%d:",
-			matViewIntoClauses->length);
+	matViewIntoClauses->length);
 
 	foreach(cell, matViewIntoClauses)
 	{
 		matViewInto = (IntoClause *) lfirst(cell);
 		elog(LOG, "MatView relname=%s", matViewInto->rel->relname);
+
+		if (matViewInto->tableSpaceName)
+		{
+			elog(
+					LOG, "Matview tablespace name: %s", matViewInto->tableSpaceName);
+		}
 
 		if (matViewInto->colNames)
 		{
@@ -92,6 +163,10 @@ void AddMatView(IntoClause *into)
 					}
 				}
 			}
+		}
+		else
+		{
+			elog(LOG, "Found no column names in matview");
 		}
 	}
 
