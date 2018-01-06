@@ -60,6 +60,7 @@
 #include "replication/slot.h"
 #include "replication/walsender.h"
 #include "rewrite/rewriteHandler.h"
+#include "rewrite/automatviewselect.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
@@ -870,6 +871,7 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
 		}
 		else
 		{
+			PrintQueryInfo(query);
 			stmt = pg_plan_query(query, cursorOptions, boundParams);
 		}
 
@@ -896,6 +898,9 @@ exec_simple_query(const char *query_string)
 	bool		was_logged = false;
 	bool		use_implicit_block;
 	char		msec_str[32];
+
+	elog(LOG, "exec_simple_query called for: %s",
+			query_string);
 
 	/*
 	 * Report query to various monitoring facilities.
