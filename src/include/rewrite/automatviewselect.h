@@ -13,11 +13,16 @@
 #include "nodes/pg_list.h"
 #include "nodes/parsenodes.h"
 #include "nodes/primnodes.h"
+#include "nodes/plannodes.h"
 
-void PrintQueryInfo(Query *query);
+extern void AddQueryStats(Query *query);
 
-List *SearchApplicableMatViews(RangeVar *rangeVar);
+extern void AddQuery(Query *query, PlannedStmt *plannedStatement);
 
-void AddMatView(IntoClause *into);
+extern void InspectQuery(Query *query);
+
+extern List *SearchApplicableMatViews(RangeVar *rangeVar);
+
+extern void AddMatView(IntoClause *into);
 
 #endif

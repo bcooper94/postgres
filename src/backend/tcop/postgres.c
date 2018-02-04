@@ -871,8 +871,10 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
 		}
 		else
 		{
-			PrintQueryInfo(query);
+//			InspectQuery(query);
+//			AddQueryStats(query);
 			stmt = pg_plan_query(query, cursorOptions, boundParams);
+			AddQuery(query, stmt);
 		}
 
 		stmt_list = lappend(stmt_list, stmt);
@@ -898,9 +900,6 @@ exec_simple_query(const char *query_string)
 	bool		was_logged = false;
 	bool		use_implicit_block;
 	char		msec_str[32];
-
-	elog(LOG, "exec_simple_query called for: %s",
-			query_string);
 
 	/*
 	 * Report query to various monitoring facilities.
