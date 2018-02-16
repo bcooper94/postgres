@@ -19,6 +19,26 @@
 
 #define MAX_TABLENAME_SIZE 256
 #define MAX_COLNAME_SIZE 256
+#define QUERY_BUFFER_SIZE 1024
+#define TARGET_BUFFER_SIZE 256
+
+#define left_join_table(joinExpr, rangeTables) \
+	(rt_fetch(joinExpr->rtindex - 2, rangeTables))
+
+#define right_join_table(joinExpr, rangeTables) \
+	(rt_fetch(joinExpr->rtindex - 1, rangeTables))
+
+typedef struct QueryPlanStats
+{
+	Query *query;
+	PlannedStmt *plan;
+} QueryPlanStats;
+
+typedef struct MatView
+{
+	char *name;
+	char *selectQuery;
+} MatView;
 
 typedef struct ColumnStats
 {
@@ -48,7 +68,9 @@ static List *matViewIntoClauses = NIL;
 //static dshash_table *selectQueryCounts = NULL;
 static List *queryStats = NIL;
 static List *plannedQueries = NIL;
+static List *queryPlanStatsList = NIL;
 
+static QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan);
 static ColumnStats *CreateColumnStats(char *colName);
 static ColumnStats *GetColumnStats(SelectQueryStats *stats, char *colName);
 static SelectQueryStats *CreateSelectQueryStats(List *targetList);
@@ -57,13 +79,21 @@ static TableQueryStats *CreateTableQueryStats(char *tableName, List *targetList)
 static TableQueryStats *FindTableQueryStats(char *tableName);
 static void PrintTableQueryStats(TableQueryStats *stats);
 
-void AnalyzePlanQuals(List *quals, RangeTblEntry *leftRte,
-				RangeTblEntry *rightRte);
+static void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
+				List *rangeTables, char *varStrBuf, size_t varStrBufSize);
+static char *AnalyzePlanQuals(List *quals, RangeTblEntry *leftRte,
+				RangeTblEntry *rightRte, JoinExpr *joinExpr, List *rangeTables);
+static void ExprToString(Expr *expr, JoinExpr *join, RangeTblEntry *rte,
+				List *rangeTables, char *targetBuf, size_t targetBufSize);
+
+static List *GenerateMatViewPerQuery();
 int64 CreateMaterializedView(char *viewName, char *selectQuery);
 double GetPlanCost(Plan *plan);
 
-static void AnalyzeJoins(Query *query);
-void AnalyzeJoinsRecurs(Query *rootQuery, Node *node);
+static MatView *UnparseQuery(Query *query);
+static RangeTblEntry *FindRte(Oid relid, List *rtable);
+static char *UnparseTargetList(Query *query);
+void UnparseFromExprRecurs(Query *rootQuery, Node *node, char *selectQuery);
 
 static void CheckInitState();
 static void PrintQueryInfo(Query *query);
@@ -96,6 +126,22 @@ void CheckInitState()
 //		updateQueryCounts = dshash_create();
 //	}
 
+}
+
+QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan)
+{
+	QueryPlanStats *stats;
+
+	stats = NULL;
+
+	if (query != NULL && plan != NULL)
+	{
+		stats = palloc(sizeof(QueryPlanStats));
+		stats->query = copyObject(query);
+		stats->plan = copyObject(plan);
+	}
+
+	return stats;
 }
 
 ColumnStats *CreateColumnStats(char *colName)
@@ -283,11 +329,68 @@ void PrintTableQueryStats(TableQueryStats *stats)
 //	}
 }
 
-void AnalyzePlanQuals(List *quals, RangeTblEntry *leftRte,
-				RangeTblEntry *rightRte)
+void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
+				List *rangeTables, char *varStrBuf, size_t varStrBufSize)
+{
+	ListCell *varCell;
+	RangeTblEntry *targetRte;
+
+	targetRte = rte;
+
+	// Special case for Join RTEs since their aliasname is "unnamed_join"
+	if (rte->rtekind == RTE_JOIN)
+	{
+		// TODO: Ensure leftRte index is correct.
+		// If rte is an RTE_JOIN, left should be the right table of last join
+		RangeTblEntry *leftRte = rt_fetch(joinExpr->rtindex - 3, rangeTables);
+		RangeTblEntry *rightRte = right_join_table(joinExpr, rangeTables);
+//		elog(LOG, "CreateJoinVarStr found JOIN RTE: rtindex=%d, name=%s, left.name=%s, right.name=%s",
+//						joinExpr->rtindex, rte->eref->aliasname,
+//						leftRte->eref->aliasname, rightRte->eref->aliasname);
+
+		// Var was from left RTE
+		// TODO: ensure this logic is correct
+		if (var->varattno <= leftRte->eref->colnames->length)
+		{
+//			elog(LOG, "Renaming tableName in Join RTE to left table: %s", leftRte->eref->aliasname);
+			targetRte = leftRte;
+		}
+		// Var from right RTE
+		else
+		{
+//			elog(LOG, "Renaming tableName in Join RTE to right table: %s", rightRte->eref->aliasname);
+			targetRte = rightRte;
+		}
+	}
+
+	sprintf(varStrBuf,
+			"%s.%s",
+			targetRte->eref->aliasname,
+			strVal(lfirst(list_nth_cell(rte->eref->colnames, var->varattno - 1))));
+
+	elog(LOG, "Var str for rtekind=%d %s",rte->rtekind, varStrBuf);
+
+	if (var->varno == INDEX_VAR)
+	{
+		elog(LOG, "Var is an index var");
+	}
+
+}
+
+/**
+ * Returns a string representation of the qualifiers.
+ * NOTE: returned char * must be pfreed.
+ */
+char *AnalyzePlanQuals(List *quals, RangeTblEntry *leftRte,
+				RangeTblEntry *rightRte, JoinExpr *joinExpr, List *rangeTables)
 {
 	ListCell *qualCell;
 	Expr *expr;
+	size_t qualBufSize = 512;
+	char *qualBuf;
+
+	qualBuf = palloc(sizeof(char) * qualBufSize);
+	memset(qualBuf, 0, qualBufSize);
 
 	if (quals != NIL)
 	{
@@ -313,47 +416,30 @@ void AnalyzePlanQuals(List *quals, RangeTblEntry *leftRte,
 						}
 						else if (opExpr->args->length == 2)
 						{
+							char leftVarStr[256], rightVarStr[256];
 							Expr *leftExpr = (Expr *) linitial(opExpr->args);
 							Expr *rightExpr = (Expr *) lsecond(opExpr->args);
-//							elog(
-//							LOG, "First OpExpr arg tag=%d, second arg tag=%d",
-//								nodeTag(leftExpr), nodeTag(rightExpr));
 
-							switch (nodeTag(leftExpr))
+							memset(leftVarStr, 0, 256);
+							memset(rightVarStr, 0, 256);
+							ExprToString(leftExpr, joinExpr, leftRte,
+											rangeTables, leftVarStr, 256);
+							ExprToString(rightExpr, joinExpr, rightRte,
+											rangeTables, rightVarStr, 256);
+
+							if (qualBuf != NULL)
 							{
-								case T_Var:
-								{
-									Var *leftVar = (Var *) leftExpr;
-									elog(
-											LOG, "Found Var type in left Expr. varno=%d, varattno=%d, colname=%s, table=%s",
-											leftVar->varno, leftVar->varattno,
-											leftRte->eref->colnames != NIL ?
-											strVal(lfirst(list_nth_cell(leftRte->eref->colnames, leftVar->varattno - 1))) : "NULL",
-											leftRte->eref->aliasname);
-									if (leftVar->varno == INDEX_VAR)
-									{
-										elog(LOG, "Left var is an index var");
-									}
-								}
-									break;
+								snprintf(qualBuf, qualBufSize,
+											"%s %s %s",
+											leftVarStr,
+											// TODO: Figure out opno to string mapping
+											opExpr->opno == 96 ?
+															"=" : "UNKNOWN",
+											rightVarStr);
 							}
-							switch (nodeTag(rightExpr))
+							else
 							{
-								case T_Var:
-								{
-									Var *rightVar = (Var *) rightExpr;
-									elog(
-											LOG, "Found Var type in right Expr. varno=%d, varattno=%d, colname=%s, table=%s",
-											rightVar->varno, rightVar->varattno,
-											rightRte->eref->colnames != NIL ?
-											strVal(lfirst(list_nth_cell(rightRte->eref->colnames, rightVar->varattno - 1))) : "NULL",
-											rightRte->eref->aliasname);
-									if (rightVar->varno == INDEX_VAR)
-									{
-										elog(LOG, "Right var is an index var");
-									}
-								}
-									break;
+								elog(WARNING, "QualBuf was NULL");
 							}
 						}
 						else
@@ -378,6 +464,21 @@ void AnalyzePlanQuals(List *quals, RangeTblEntry *leftRte,
 			}
 		}
 	}
+
+	return qualBuf;
+}
+
+void ExprToString(Expr *expr, JoinExpr *join, RangeTblEntry *rte,
+				List *rangeTables, char *targetBuf, size_t targetBufSize)
+{
+	switch (nodeTag(expr))
+	{
+		case T_Var:
+			CreateJoinVarStr(join, (Var *) expr, rte, rangeTables, targetBuf,
+								targetBufSize);
+			break;
+	}
+
 }
 
 double GetPlanCost(Plan *plan)
@@ -441,27 +542,116 @@ double GetPlanCost(Plan *plan)
 	return cost;
 }
 
-void AnalyzeJoins(Query *query)
+MatView *UnparseQuery(Query *query)
 {
+	ListCell *listCell;
+	TargetEntry *targetEntry;
 	FromExpr *from;
-	ListCell *fromCell;
+	MatView *matView;
 
+	matView = palloc(sizeof(MatView));
+	matView->name = palloc(sizeof(char) * 256);
+
+	matView->selectQuery = UnparseTargetList(query);
 	if (query->jointree != NULL)
 	{
 		from = query->jointree;
-		elog(LOG, "Analyzing Query Join Tree qualifiers...");
 //		AnalyzePlanQuals(query->jointree->quals);
+		strncat(matView->selectQuery, "FROM", QUERY_BUFFER_SIZE);
 
-		foreach(fromCell, from->fromlist)
+		foreach(listCell, from->fromlist)
 		{
-			AnalyzeJoinsRecurs(query, lfirst(fromCell));
+			UnparseFromExprRecurs(query, lfirst(listCell), matView->selectQuery);
 		}
+
+		elog(LOG, "Constructed full select query from Join tree: %s", matView->selectQuery);
 	}
+
+	return matView;
 }
 
-void AnalyzeJoinsRecurs(Query *rootQuery, Node *node)
+/**
+ * Returns the SELECT clause of a select statement.
+ * NOTE: Returned pointer must be pfree'd.
+ */
+char *UnparseTargetList(Query *query)
+{
+	TargetEntry *targetEntry;
+	RangeTblEntry *rte;
+	char *selectTargets;
+	char targetBuffer[TARGET_BUFFER_SIZE];
+	ListCell *listCell;
+	int index;
+
+	selectTargets = palloc(sizeof(char) * QUERY_BUFFER_SIZE);
+	strcpy(selectTargets, "SELECT ");
+	index = 0;
+
+	if (query->targetList != NIL)
+	{
+		foreach(listCell, query->targetList)
+		{
+			targetEntry = lfirst_node(TargetEntry, listCell);
+			rte = FindRte(targetEntry->resorigtbl, query->rtable);
+
+			if (targetEntry->resname != NULL && rte != NULL && rte->eref->aliasname != NULL)
+			{
+				if (index < query->targetList->length - 1)
+				{
+					snprintf(targetBuffer, TARGET_BUFFER_SIZE, "%s.%s, ",
+							 rte->eref->aliasname, targetEntry->resname);
+				}
+				else
+				{
+					snprintf(targetBuffer, TARGET_BUFFER_SIZE, "%s.%s ",
+							 rte->eref->aliasname, targetEntry->resname);
+				}
+
+				strncat(selectTargets, targetBuffer, QUERY_BUFFER_SIZE);
+			}
+
+			index++;
+		}
+	}
+	// Assume SELECT *
+	else
+	{
+		strcpy(selectTargets, "* ");
+	}
+
+	return selectTargets;
+}
+
+/**
+ * Find a particular RangeTblEntry by its Oid within a list of RTEs.
+ */
+RangeTblEntry *FindRte(Oid relid, List *rtable)
+{
+	ListCell *rteCell;
+	RangeTblEntry *rte;
+
+	foreach(rteCell, rtable)
+	{
+		rte = lfirst_node(RangeTblEntry, rteCell);
+
+		if (rte->relid == relid)
+		{
+			return rte;
+		}
+	}
+
+	return NULL;
+}
+
+void UnparseFromExprRecurs(Query *rootQuery, Node *node, char *selectQuery)
 {
 	RangeTblEntry *joinRte, *leftRte, *rightRte;
+	int selectQueryIndex;
+	char *joinBuf, *qualStr;
+
+	selectQueryIndex = strnlen(selectQuery, QUERY_BUFFER_SIZE);
+	joinBuf = palloc(sizeof(char) * QUERY_BUFFER_SIZE);
+	memset(joinBuf, 0, QUERY_BUFFER_SIZE);
 
 	if (node != NULL)
 	{
@@ -504,22 +694,45 @@ void AnalyzeJoinsRecurs(Query *rootQuery, Node *node)
 			// Left and right RTE indices should be correct.
 			// See addRangeTableEntryForJoin in src/backend/parser/parse_relation.c:1858
 			// 	for how RTEs and join RTEs are added to the Query's list of RTEs
-			joinRte = rt_fetch(joinExpr->rtindex, rootQuery->rtable);
-			leftRte = rt_fetch(joinExpr->rtindex - 2, rootQuery->rtable);
-			rightRte = rt_fetch(joinExpr->rtindex - 1, rootQuery->rtable);
-			AnalyzeJoinsRecurs(rootQuery, joinExpr->larg);
-			AnalyzeJoinsRecurs(rootQuery, joinExpr->rarg);
+			UnparseFromExprRecurs(rootQuery, joinExpr->larg, selectQuery);
+			UnparseFromExprRecurs(rootQuery, joinExpr->rarg, selectQuery);
 
-			elog(LOG, "JoinExpr: %s on join RTE. leftTable=%s, rightTable=%s",
-			joinTag,
-			leftRte != NULL ? leftRte->eref->aliasname : "NULL",
-			rightRte != NULL ? rightRte->eref->aliasname : "NULL");
-			AnalyzePlanQuals(joinExpr->quals, leftRte, rightRte);
+			joinRte = rt_fetch(joinExpr->rtindex, rootQuery->rtable);
+			leftRte = left_join_table(joinExpr, rootQuery->rtable);
+			rightRte = right_join_table(joinExpr, rootQuery->rtable);
+			qualStr = AnalyzePlanQuals(joinExpr->quals, leftRte, rightRte,
+										joinExpr, rootQuery->rtable);
+			elog(LOG, "Attempting to create join string from Qual string...");
+
+			// TODO: differentiate between first join and following joins
+			if (leftRte->rtekind == RTE_JOIN)
+			{
+				snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s ON %s", joinTag,
+							rightRte->eref->aliasname, qualStr);
+			}
+			else
+			{
+				snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s %s ON %s",
+							leftRte->eref->aliasname, joinTag,
+							rightRte->eref->aliasname, qualStr);
+			}
+
+			pfree(qualStr);
+			qualStr = NULL;
+			elog(LOG, "Created join string: %s", joinBuf);
+
+			strcat(selectQuery + selectQueryIndex, joinBuf);
+//			AnalyzePlanQuals(joinExpr->quals, leftRte, rightRte);
 		}
 		else if (IsA(node, FromExpr))
 		{
 			elog(LOG, "Found FromExpr in recursive join analysis");
 		}
+	}
+
+	if (joinBuf != NULL)
+	{
+		pfree(joinBuf);
 	}
 }
 
@@ -530,18 +743,28 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
 //	ListCell *joinVarCell;
 //	RangeTblEntry *rte;
 	MemoryContext oldContext;
-	Query *queryCopy;
-	PlannedStmt *statementCopy;
+//	Query *queryCopy;
+//	PlannedStmt *statementCopy;
 //	TableQueryStats *stats;
 
 	CheckInitState();
 	oldContext = MemoryContextSwitchTo(AutoMatViewContext);
-	queryCopy = copyObject(query);
-	statementCopy = copyObject(plannedStatement);
-	plannedQueries = lappend(plannedQueries, statementCopy);
+//	queryCopy = copyObject(query);
+//	statementCopy = copyObject(plannedStatement);
+//	plannedQueries = lappend(plannedQueries, statementCopy);
+	queryPlanStatsList = lappend(
+					queryPlanStatsList,
+					CreateQueryPlanStats(query, plannedStatement));
+	UnparseQuery(query);
 
-	AnalyzeJoins(queryCopy);
-	Plan p;
+	// TODO: Set training threshold from postgres properties file
+	if (queryPlanStatsList->length > 5)
+	{
+
+	}
+
+//	AnalyzeJoins(queryCopy);
+//	Plan p;
 
 	/*
 	 //	elog(LOG, "%d total query plans stored", plannedQueries->length);
@@ -680,6 +903,28 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
 	 */
 
 	MemoryContextSwitchTo(oldContext);
+}
+
+/**
+ * Generates a MatView per recorded query.
+ *
+ * returns: List (of MatView)
+ */
+List *GenerateMatViewPerQuery()
+{
+	ListCell *queryPlanCell;
+	QueryPlanStats *queryPlan;
+	Query *query;
+	PlannedStmt *plannedStmt;
+	char selectStmtBuf[1000], viewNameBuf[256];
+
+	foreach(queryPlanCell, queryPlanStatsList)
+	{
+		queryPlan = lfirst_node(QueryPlanStats, queryPlanCell);
+		query = queryPlan->query;
+	}
+
+	return NIL;
 }
 
 int64 CreateMaterializedView(char *viewName, char *selectQuery)
