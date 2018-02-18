@@ -871,10 +871,12 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
 		}
 		else
 		{
-//			InspectQuery(query);
-//			AddQueryStats(query);
 			stmt = pg_plan_query(query, cursorOptions, boundParams);
-			AddQuery(query, stmt);
+
+			if (IsCollectingQueries() == true)
+			{
+				AddQuery(query, stmt);
+			}
 		}
 
 		stmt_list = lappend(stmt_list, stmt);

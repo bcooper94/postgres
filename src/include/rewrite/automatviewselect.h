@@ -15,6 +15,8 @@
 #include "nodes/primnodes.h"
 #include "nodes/plannodes.h"
 
+extern bool IsCollectingQueries();
+
 extern void AddQueryStats(Query *query);
 
 extern void AddQuery(Query *query, PlannedStmt *plannedStatement);
