@@ -16,6 +16,7 @@
 #include "lib/dshash.h"
 #include "executor/spi.h"
 #include "utils/builtins.h"
+#include "utils/guc_tables.h"
 
 #define MAX_TABLENAME_SIZE 256
 #define MAX_COLNAME_SIZE 256
@@ -41,6 +42,7 @@ typedef struct MatView
 {
 	char *name;
 	char *selectQuery;
+	Query *baseQuery; // Query object which this MatView is based on
 } MatView;
 
 typedef struct ColumnStats
@@ -71,8 +73,13 @@ static List *matViewIntoClauses = NIL;
 //static dshash_table *selectQueryCounts = NULL;
 static List *queryStats = NIL;
 static List *plannedQueries = NIL;
+static List *createdMatViews = NIL;
 static List *queryPlanStatsList = NIL;
 static bool isCollectingQueries = true;
+
+// Have we loaded the trainingSampleCount from postgresql.conf?
+static bool isTrainingSampleCountLoaded = false;
+static int trainingSampleCount = 100;
 
 static QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan);
 static ColumnStats *CreateColumnStats(char *colName);
@@ -88,23 +95,33 @@ static void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
 static char *AnalyzePlanQuals(List *quals, RangeTblEntry *leftRte,
 				RangeTblEntry *rightRte, JoinExpr *joinExpr, List *rangeTables);
 static void AggrefToString(TargetEntry *aggrefEntry, List *rtable,
-				bool renameAggref, char *targetBuf,
-				size_t targetBufSize);
+				bool renameAggref, char *targetBuf, size_t targetBufSize);
 static void ExprToString(Expr *expr, JoinExpr *join, RangeTblEntry *rte,
 				List *rangeTables, char *targetBuf, size_t targetBufSize);
+static bool *TargetEntryToString(TargetEntry *targetEntry, List *rtable,
+				bool renameTargets, char *outBuf, size_t outBufSize);
 static void VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
 				size_t varBufSize);
 
-static void ReplaceChars(char *string, char target, char replacement, size_t sizeLimit);
+static void ReplaceChars(char *string, char target, char replacement,
+				size_t sizeLimit);
 
 int64 CreateMaterializedView(char *viewName, char *selectQuery);
 double GetPlanCost(Plan *plan);
 
+static MatView *GetBestMatViewMatch(Query *query);
+static List *GetMatchingMatViews(Query *query);
+static bool DoesQueryMatchMatView(Query *query, MatView *matView);
+
 static MatView *UnparseQuery(Query *query);
 static RangeTblEntry *FindRte(Oid relid, List *rtable);
-static char *UnparseTargetList(List *targetList, List *rtable, bool renameTargets);
+static char *UnparseTargetList(List *targetList, List *rtable,
+				bool renameTargets);
 static char *UnparseRangeTableEntries(List *rtable);
-static void UnparseFromExprRecurs(Query *rootQuery, ListCell *fromExprCell, char *selectQuery);
+static void UnparseFromExprRecurs(Query *rootQuery, ListCell *fromExprCell,
+				char *selectQuery);
+static char *UnparseGroupClause(List *groupClause, List *targetList,
+				List *rtable);
 
 static void CreateRelevantMatViews();
 static List *GetCostlyQueries(double costCutoffRatio);
@@ -123,6 +140,11 @@ void CheckInitState()
 													ALLOCSET_DEFAULT_SIZES
 													);
 	}
+//	if (!isTrainingSampleCountLoaded)
+//	{
+//		elog(LOG, "Loading training sample count...");
+//		struct config_generic **configs = get_guc_variables();
+//	}
 }
 
 QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan)
@@ -459,9 +481,8 @@ void ExprToStringQuery(Expr *expr, Query *rootQuery, char *targetBuf)
 	}
 }
 
-void AggrefToString(TargetEntry *aggrefEntry, List *rtable,
-				bool renameAggref, char *targetBuf,
-				size_t targetBufSize)
+void AggrefToString(TargetEntry *aggrefEntry, List *rtable, bool renameAggref,
+				char *targetBuf, size_t targetBufSize)
 {
 	Aggref *aggref;
 	ListCell *argCell;
@@ -495,13 +516,13 @@ void AggrefToString(TargetEntry *aggrefEntry, List *rtable,
 		}
 
 		snprintf(targetBuf, targetBufSize, "%s(%s) AS %s_%s",
-					aggrefEntry->resname, targetStr,
-					aggrefEntry->resname, copyBuf);
+					aggrefEntry->resname, targetStr, aggrefEntry->resname,
+					copyBuf);
 	}
 	else
 	{
-		snprintf(targetBuf, targetBufSize, "%s(%s)",
-					aggrefEntry->resname, targetStr);
+		snprintf(targetBuf, targetBufSize, "%s(%s)", aggrefEntry->resname,
+					targetStr);
 	}
 
 	if (aggref->aggstar == false)
@@ -527,6 +548,30 @@ void ExprToString(Expr *expr, JoinExpr *join, RangeTblEntry *rte,
 
 }
 
+bool *TargetEntryToString(TargetEntry *targetEntry, List *rtable,
+				bool renameTargets, char *outBuf, size_t outBufSize)
+{
+	bool success = true;
+
+	switch (nodeTag(targetEntry->expr))
+	{
+		case T_Var:
+		{
+			Var *var = (Var *) targetEntry->expr;
+			RangeTblEntry *varRte = rt_fetch(var->varno, rtable);
+			VarToString(var, rtable, renameTargets, outBuf, outBufSize);
+			break;
+		}
+		case T_Aggref:
+			AggrefToString(targetEntry, rtable, true, outBuf, outBufSize);
+			break;
+		default:
+			success = false;
+	}
+
+	return success;
+}
+
 void VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
 				size_t varBufSize)
 {
@@ -538,7 +583,9 @@ void VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
 
 	if (var->varattno > 0)
 	{
-		colName = renamedColName = strVal(lfirst(list_nth_cell(varRte->eref->colnames, var->varattno - 1)));
+		colName =
+						renamedColName =
+										strVal(lfirst(list_nth_cell(varRte->eref->colnames, var->varattno - 1)));
 	}
 	else
 	{
@@ -549,7 +596,7 @@ void VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
 	if (renameVar == true)
 	{
 		snprintf(varBuf, varBufSize, "%s.%s AS %s_%s", tableName, colName,
-				 tableName, renamedColName);
+					tableName, renamedColName);
 	}
 	else
 	{
@@ -568,7 +615,8 @@ void ReplaceChars(char *string, char target, char replacement, size_t sizeLimit)
 
 	for (index = 0; index < sizeLimit && string[index] != '\0'; index++)
 	{
-		if (string[index] == target) {
+		if (string[index] == target)
+		{
 			string[index] = replacement;
 		}
 	}
@@ -636,11 +684,13 @@ MatView *UnparseQuery(Query *query)
 	TargetEntry *targetEntry;
 	FromExpr *from;
 	MatView *matView;
-	char *targetListStr, *fromClauseStr;
+	char *targetListStr, *fromClauseStr, *groupClauseStr;
 
 	matView = palloc(sizeof(MatView));
 	matView->name = palloc(sizeof(char) * 256);
 	snprintf(matView->name, 256, "Matview_%d", rand());
+
+	matView->baseQuery = copyObject(query);
 
 	matView->selectQuery = palloc(sizeof(char) * QUERY_BUFFER_SIZE);
 	strcpy(matView->selectQuery, "SELECT ");
@@ -657,12 +707,8 @@ MatView *UnparseQuery(Query *query)
 
 		foreach(listCell, from->fromlist)
 		{
-			UnparseFromExprRecurs(query, listCell,
-									matView->selectQuery);
+			UnparseFromExprRecurs(query, listCell, matView->selectQuery);
 		}
-
-		elog(
-				LOG, "Constructed full select query from Join tree: %s", matView->selectQuery);
 	}
 	else
 	{
@@ -671,6 +717,27 @@ MatView *UnparseQuery(Query *query)
 		strncat(matView->selectQuery, fromClauseStr, QUERY_BUFFER_SIZE);
 		pfree(fromClauseStr);
 	}
+	if (query->groupClause != NIL)
+	{
+		groupClauseStr = UnparseGroupClause(query->groupClause,
+											query->targetList, query->rtable);
+
+		if (groupClauseStr != NULL)
+		{
+			strncat(matView->selectQuery, groupClauseStr, QUERY_BUFFER_SIZE);
+			pfree(groupClauseStr);
+		}
+	}
+	else
+	{
+		elog(LOG, "No GROUP clause found");
+	}
+	if (query->groupingSets != NIL)
+	{
+		elog(LOG, "Found grouping sets in query");
+	}
+
+	elog(LOG, "Constructed full select query: %s", matView->selectQuery);
 
 	return matView;
 }
@@ -701,28 +768,18 @@ char *UnparseTargetList(List *targetList, List *rtable, bool renameTargets)
 					LOG, "TargetEntry %s, TE.expr nodeTag: %d, resorigtable=%d, column attribute number=%d",
 					targetEntry->resname, nodeTag(targetEntry->expr),
 					targetEntry->resorigtbl, targetEntry->resorigcol);
-
-			switch (nodeTag(targetEntry->expr))
+			if (TargetEntryToString(targetEntry, rtable, renameTargets,
+									targetBuffer, TARGET_BUFFER_SIZE))
 			{
-				case T_Var:
+				if (index < targetList->length - 1)
 				{
-					Var *var = (Var *) targetEntry->expr;
-					RangeTblEntry *varRte = rt_fetch(var->varno, rtable);
-					VarToString(var, rtable, renameTargets, targetBuffer, TARGET_BUFFER_SIZE);
-
-					if (index < targetList->length - 1)
-					{
-						strncat(targetBuffer, ", ", TARGET_BUFFER_SIZE);
-					}
-
-					strncat(selectTargets, targetBuffer, QUERY_BUFFER_SIZE);
-					break;
+					strncat(targetBuffer, ", ", TARGET_BUFFER_SIZE);
 				}
-				case T_Aggref:
-					AggrefToString(targetEntry, rtable, true,
-									targetBuffer, TARGET_BUFFER_SIZE);
-					strncat(selectTargets, targetBuffer, QUERY_BUFFER_SIZE);
-					break;
+				strncat(selectTargets, targetBuffer, QUERY_BUFFER_SIZE);
+			}
+			else
+			{
+				elog(WARNING, "Failed to convert TargetEntry to string");
 			}
 
 			index++;
@@ -761,7 +818,7 @@ char *UnparseRangeTableEntries(List *rtable)
 		if (index < rtable->length - 1)
 		{
 			snprintf(rteBuffer, TARGET_BUFFER_SIZE, "%s, ",
-					 rte->eref->aliasname);
+						rte->eref->aliasname);
 		}
 		else
 		{
@@ -796,7 +853,8 @@ RangeTblEntry *FindRte(Oid relid, List *rtable)
 	return NULL;
 }
 
-void UnparseFromExprRecurs(Query *rootQuery, ListCell *fromExprCell, char *selectQuery)
+void UnparseFromExprRecurs(Query *rootQuery, ListCell *fromExprCell,
+				char *selectQuery)
 {
 	RangeTblEntry *joinRte, *leftRte, *rightRte;
 	int selectQueryIndex;
@@ -889,7 +947,7 @@ void UnparseFromExprRecurs(Query *rootQuery, ListCell *fromExprCell, char *selec
 			if (lnext(fromExprCell) != NULL)
 			{
 				snprintf(joinBuf, QUERY_BUFFER_SIZE, "%s, ",
-						 rte->eref->aliasname);
+							rte->eref->aliasname);
 			}
 			else
 			{
@@ -914,6 +972,70 @@ void UnparseFromExprRecurs(Query *rootQuery, ListCell *fromExprCell, char *selec
 	}
 }
 
+/**
+ * Unparse a list of SortGroupClauses into the GROUP BY clause of a SQL string.
+ * param groupClause: List (of SortGroupClause) from Query
+ * param targetList: List (of TargetEntry) from Query
+ * param rtable: List (of RangeTblEntry) from Query
+ *
+ * NOTE: returned pointer must be pfree'd.
+ */
+char *UnparseGroupClause(List *groupClause, List *targetList, List *rtable)
+{
+	char *groupClauseStr;
+	ListCell *groupCell;
+	SortGroupClause *groupStmt;
+	TargetEntry *targetEntry;
+	char targetBuffer[TARGET_BUFFER_SIZE];
+	int index;
+
+	if (groupClause != NIL && groupClause->length > 0)
+	{
+		index = 0;
+		groupClauseStr = palloc(sizeof(char) * TARGET_BUFFER_SIZE);
+
+		strcpy(groupClauseStr, " GROUP BY ");
+
+		foreach(groupCell, groupClause)
+		{
+			groupStmt = lfirst_node(SortGroupClause, groupCell);
+			targetEntry = (TargetEntry *) list_nth(targetList,
+													groupStmt->tleSortGroupRef);
+			if (TargetEntryToString(targetEntry, rtable, false, targetBuffer,
+									TARGET_BUFFER_SIZE))
+			{
+				elog(
+						LOG, "Found SortGroupClause nodeTag=%d, sortGroupRef=%d, eqop=%d, sortop=%d, targetEntry=%s",
+						nodeTag(groupStmt), groupStmt->tleSortGroupRef,
+						groupStmt->eqop, groupStmt->sortop,
+						targetBuffer);
+
+				strncat(groupClauseStr, targetBuffer, TARGET_BUFFER_SIZE);
+
+				if (index < groupClause->length - 1)
+				{
+					strncat(groupClauseStr, ", ", TARGET_BUFFER_SIZE);
+				}
+			}
+			else
+			{
+				elog(
+						WARNING, "Failed to convert TargetEntry in GROUP BY clause to string");
+			}
+
+			index++;
+		}
+	}
+	else
+	{
+		groupClauseStr = NULL;
+	}
+
+	elog(LOG, "Constructed GROUP BY clause: %s", groupClauseStr);
+
+	return groupClauseStr;
+}
+
 void AddQuery(Query *query, PlannedStmt *plannedStatement)
 {
 	MemoryContext oldContext;
@@ -927,7 +1049,7 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
 	UnparseQuery(query);
 
 	// TODO: Set training threshold from postgres properties file
-	if (queryPlanStatsList->length > 5)
+	if (queryPlanStatsList->length > trainingSampleCount)
 	{
 		isCollectingQueries = false;
 		CreateRelevantMatViews();
@@ -953,7 +1075,11 @@ void CreateRelevantMatViews()
 		query = lfirst_node(Query, queryCell);
 		newMatView = UnparseQuery(query);
 		CreateMaterializedView(newMatView->name, newMatView->selectQuery);
+		createdMatViews = list_append_unique(createdMatViews, newMatView);
 	}
+
+	elog(LOG, "Created %d materialized views based on given query workload",
+					createdMatViews != NIL ? createdMatViews->length : 0);
 }
 
 /**
@@ -1083,6 +1209,64 @@ int64 CreateMaterializedView(char *viewName, char *selectQuery)
 bool IsCollectingQueries()
 {
 	return isCollectingQueries;
+}
+
+/**
+ * Rewrite the given Query to use available materialized views.
+ * returns: SQL query string representing rewritten Query object.
+ */
+char *RewriteQuery(Query *query)
+{
+	MatView *bestMatViewMatch;
+
+	bestMatViewMatch = GetBestMatViewMatch(query);
+	// TODO: rewrite query to use MatView
+
+	return NULL;
+}
+
+MatView *GetBestMatViewMatch(Query *query)
+{
+	List *matchingMatViews;
+
+	matchingMatViews = GetMatchingMatViews(query);
+	// TODO: filter returned MatViews to find best match
+
+	return NULL;
+}
+
+/**
+ * Get a list of matching MatViews given a Query.
+ * returns: List (of MatView)
+ *
+ * NOTE: returned List must be pfree'd.
+ */
+List *GetMatchingMatViews(Query *query)
+{
+	List *matchingViews;
+	ListCell *viewCell;
+	MatView *matView;
+
+	matchingViews = NIL;
+
+	foreach(viewCell, createdMatViews)
+	{
+		matView = (MatView *) lfirst(viewCell);
+
+		if (DoesQueryMatchMatView(query, matView))
+		{
+			matchingViews = list_append_unique(matchingViews, matView);
+		}
+	}
+
+	return matchingViews;
+}
+
+bool DoesQueryMatchMatView(Query *query, MatView *matView)
+{
+	bool isMatch = false;
+
+	return isMatch;
 }
 
 void AddQueryStats(Query *query)
@@ -1294,7 +1478,6 @@ void AddMatView(IntoClause *into)
 	CheckInitState();
 
 	oldContext = MemoryContextSwitchTo(AutoMatViewContext);
-//	elog(LOG, "Old memory context: %s", oldContext->name);
 
 	intoCopy = copyObject(into);
 	elog(LOG, "Appending materialized view %s to list of available matviews",

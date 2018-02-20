@@ -873,7 +873,7 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
 		{
 			stmt = pg_plan_query(query, cursorOptions, boundParams);
 
-			if (IsCollectingQueries() == true)
+			if (query->commandType == CMD_SELECT && IsCollectingQueries() == true)
 			{
 				AddQuery(query, stmt);
 			}
@@ -1048,6 +1048,7 @@ exec_simple_query(const char *query_string)
 		 */
 		oldcontext = MemoryContextSwitchTo(MessageContext);
 
+		// TODO: Intercept select queries for rewrite here?
 		querytree_list = pg_analyze_and_rewrite(parsetree, query_string,
 												NULL, 0, NULL);
 

@@ -27,4 +27,6 @@ extern List *SearchApplicableMatViews(RangeVar *rangeVar);
 
 extern void AddMatView(IntoClause *into);
 
+extern char *RewriteQuery(Query *query);
+
 #endif
