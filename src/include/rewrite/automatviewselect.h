@@ -15,6 +15,19 @@
 #include "nodes/primnodes.h"
 #include "nodes/plannodes.h"
 
+
+typedef struct MatView
+{
+	char *name;
+	char *selectQuery;
+	Query *baseQuery; // Query object which this MatView is based on
+	List *renamedTargetList; // List (of TargetEntry) with renamed TargetEntries
+	List *renamedRtable;
+} MatView;
+
+
+extern MemoryContext SwitchToAutoMatViewContext();
+
 extern bool IsCollectingQueries();
 
 extern void AddQueryStats(Query *query);
@@ -27,6 +40,8 @@ extern List *SearchApplicableMatViews(RangeVar *rangeVar);
 
 extern void AddMatView(IntoClause *into);
 
-extern char *RewriteQuery(Query *query);
+extern MatView *GetBestMatViewMatch(Query *query);
+
+extern char *RewriteQuery(Query *query, MatView *matView);
 
 #endif

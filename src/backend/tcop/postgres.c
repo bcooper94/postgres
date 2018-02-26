@@ -47,6 +47,7 @@
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "nodes/print.h"
+#include "nodes/pg_list.h"
 #include "optimizer/planner.h"
 #include "pgstat.h"
 #include "pg_trace.h"
@@ -873,9 +874,12 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
 		{
 			stmt = pg_plan_query(query, cursorOptions, boundParams);
 
-			if (query->commandType == CMD_SELECT && IsCollectingQueries() == true)
+			if (query->commandType == CMD_SELECT)
 			{
-				AddQuery(query, stmt);
+				if (IsCollectingQueries() == true)
+				{
+					AddQuery(query, stmt);
+				}
 			}
 		}
 
@@ -892,7 +896,7 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
  * Execute a "simple Query" protocol message.
  */
 static void
-exec_simple_query(const char *query_string)
+exec_simple_query(const char *query_string, bool attempt_rewrite)
 {
 	CommandDest dest = whereToSendOutput;
 	MemoryContext oldcontext;
@@ -902,6 +906,8 @@ exec_simple_query(const char *query_string)
 	bool		was_logged = false;
 	bool		use_implicit_block;
 	char		msec_str[32];
+
+//	elog(LOG, "exec_simple_query executing %s", query_string);
 
 	/*
 	 * Report query to various monitoring facilities.
@@ -926,6 +932,7 @@ exec_simple_query(const char *query_string)
 	 * one of those, else bad things will happen in xact.c. (Note that this
 	 * will normally change current memory context.)
 	 */
+//	elog(LOG, "Starting xact command");
 	start_xact_command();
 
 	/*
@@ -934,6 +941,7 @@ exec_simple_query(const char *query_string)
 	 * statement and portal; this ensures we recover any storage used by prior
 	 * unnamed operations.)
 	 */
+//	elog(LOG, "Dropping unnamed statements");
 	drop_unnamed_stmt();
 
 	/*
@@ -945,6 +953,7 @@ exec_simple_query(const char *query_string)
 	 * Do basic parsing of the query or queries (this should be safe even if
 	 * we are in aborted transaction state!)
 	 */
+//	elog(LOG, "Parsing query_string");
 	parsetree_list = pg_parse_query(query_string);
 
 	/* Log immediately if dictated by log_statement */
@@ -997,6 +1006,7 @@ exec_simple_query(const char *query_string)
 
 		set_ps_display(commandTag, false);
 
+//		elog(LOG, "Beginning command");
 		BeginCommand(commandTag, dest);
 
 		/*
@@ -1016,6 +1026,7 @@ exec_simple_query(const char *query_string)
 					 errdetail_abort()));
 
 		/* Make sure we are in a transaction command */
+//		elog(LOG, "Starting new xact command");
 		start_xact_command();
 
 		/*
@@ -1036,6 +1047,7 @@ exec_simple_query(const char *query_string)
 		 */
 		if (analyze_requires_snapshot(parsetree))
 		{
+//			elog(LOG, "Pushed active snapshot");
 			PushActiveSnapshot(GetTransactionSnapshot());
 			snapshot_set = true;
 		}
@@ -1049,9 +1061,57 @@ exec_simple_query(const char *query_string)
 		oldcontext = MemoryContextSwitchTo(MessageContext);
 
 		// TODO: Intercept select queries for rewrite here?
+//		elog(LOG, "Analyzing and rewriting query");
 		querytree_list = pg_analyze_and_rewrite(parsetree, query_string,
 												NULL, 0, NULL);
 
+		if (attempt_rewrite && !IsCollectingQueries()
+						&& parsetree_list->length == 1 &&
+						querytree_list->length == 1)
+		{
+//			elog(LOG, "Attempting to find matching MatViews for query...");
+			MemoryContext prevContext = SwitchToAutoMatViewContext();
+			Query *query = list_nth(querytree_list, 0);
+			MatView *matView = GetBestMatViewMatch(query);
+			if (matView != NULL)
+			{
+//				elog(LOG, "Found matching MatView and now rewriting Query...");
+				char *newQuery = RewriteQuery(query, matView);
+				char *copiedQuery = MemoryContextStrdup(oldcontext, newQuery);
+				pfree(newQuery);
+
+//				elog(LOG, "Switching back to old context...");
+				MemoryContextSwitchTo(oldcontext);
+				elog(LOG, "Rewrote %s to: %s", query_string, copiedQuery);
+				// TODO: Do we need to do any other cleanup?
+
+				if (snapshot_set)
+				{
+//					elog(LOG, "Popping active snapshot before executing rewritten query");
+					PopActiveSnapshot();
+					snapshot_set = false;
+				}
+
+				if (use_implicit_block)
+				{
+//					elog(LOG, "Ending implicit transaction block");
+					EndImplicitTransactionBlock();
+				}
+
+//				elog(LOG, "Finishing current transaction before executing rewritten query...");
+				finish_xact_command();
+				drop_unnamed_stmt();
+
+				elog(LOG, "Executing rewritten query...");
+				return exec_simple_query(copiedQuery, false);
+			}
+			else
+			{
+				MemoryContextSwitchTo(prevContext);
+			}
+		}
+
+//		elog(LOG, "Planning queries");
 		plantree_list = pg_plan_queries(querytree_list,
 										CURSOR_OPT_PARALLEL_OK, NULL);
 
@@ -1066,6 +1126,7 @@ exec_simple_query(const char *query_string)
 		 * Create unnamed portal to run the query or queries in. If there
 		 * already is one, silently drop it.
 		 */
+//		elog(LOG, "Creating portal");
 		portal = CreatePortal("", true, true);
 		/* Don't display the portal in pg_cursors */
 		portal->visible = false;
@@ -1075,6 +1136,7 @@ exec_simple_query(const char *query_string)
 		 * we are passing here is in MessageContext, which will outlive the
 		 * portal anyway.
 		 */
+//		elog(LOG, "Defining portal query");
 		PortalDefineQuery(portal,
 						  NULL,
 						  query_string,
@@ -1085,6 +1147,7 @@ exec_simple_query(const char *query_string)
 		/*
 		 * Start the portal.  No parameters here.
 		 */
+//		elog(LOG, "Starting query portal");
 		PortalStart(portal, NULL, 0, InvalidSnapshot);
 
 		/*
@@ -1124,6 +1187,7 @@ exec_simple_query(const char *query_string)
 		/*
 		 * Run the portal to completion, and then drop it (and the receiver).
 		 */
+//		elog(LOG, "Running the portal");
 		(void) PortalRun(portal,
 						 FETCH_ALL,
 						 true,	/* always top level */
@@ -1138,6 +1202,7 @@ exec_simple_query(const char *query_string)
 
 		if (lnext(parsetree_item) == NULL)
 		{
+//			elog(LOG, "No more queries in parsetree, ending transaction");
 			/*
 			 * If this is the last parsetree of the query string, close down
 			 * transaction statement before reporting command-complete.  This
@@ -4140,10 +4205,10 @@ PostgresMain(int argc, char *argv[],
 					if (am_walsender)
 					{
 						if (!exec_replication_command(query_string))
-							exec_simple_query(query_string);
+							exec_simple_query(query_string, true);
 					}
 					else
-						exec_simple_query(query_string);
+						exec_simple_query(query_string, true);
 
 					send_ready_for_query = true;
 				}
