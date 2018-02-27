@@ -36,6 +36,15 @@
 #define get_colname(rte, var) \
 	(strVal(lfirst(list_nth_cell((rte)->eref->colnames, (var)->varattno - 1))))
 
+typedef struct MatView
+{
+	char *name;
+	char *selectQuery;
+	Query *baseQuery; // Query object which this MatView is based on
+	List *renamedTargetList; // List (of TargetEntry) with renamed TargetEntries
+	List *renamedRtable;
+} MatView;
+
 typedef struct QueryPlanStats
 {
 	Query *query;
@@ -78,6 +87,10 @@ static bool isCollectingQueries = true;
 static bool isTrainingSampleCountLoaded = false;
 static int trainingSampleCount = 1;
 
+// Internal state functions
+static void CheckInitState();
+
+// Query stats functions
 static QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan);
 static ColumnStats *CreateColumnStats(char *colName);
 static ColumnStats *GetColumnStats(SelectQueryStats *stats, char *colName);
@@ -87,11 +100,22 @@ static TableQueryStats *CreateTableQueryStats(char *tableName, List *targetList)
 static TableQueryStats *FindTableQueryStats(char *tableName);
 static void PrintTableQueryStats(TableQueryStats *stats);
 
-static void FreeMatView(MatView *matView);
-
+// Un-parsing operations
+static MatView *UnparseQuery(Query *query);
+static List *UnparseTargetList(List *targetList, List *rtable,
+				bool renameTargets, char *selectTargetsBuf,
+				size_t selectTargetsBufSize);
+static TargetEntry *CreateRenamedTargetEntry(TargetEntry *baseTE, char *newName,
+				bool flattenExprTree);
+static char *UnparseRangeTableEntries(List *rtable);
+static void UnparseFromExprRecurs(Query *rootQuery, Node *node,
+				int fromClauseIndex, size_t fromClauseLength, char *selectQuery,
+				size_t selectQuerySize);
+static char *UnparseGroupClause(List *groupClause, List *targetList,
+				List *rtable);
 static void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
 				List *rangeTables, char *varStrBuf, size_t varStrBufSize);
-static char *AnalyzePlanQuals(List *quals, RangeTblEntry *leftRte,
+static char *UnparseQuals(List *quals, RangeTblEntry *leftRte,
 				RangeTblEntry *rightRte, JoinExpr *joinExpr, List *rangeTables);
 static char *AggrefToString(TargetEntry *aggrefEntry, List *rtable,
 				bool renameAggref, char *aggrefStrBuf, size_t aggrefStrBufSize);
@@ -99,53 +123,42 @@ static void ExprToString(Expr *expr, JoinExpr *join, RangeTblEntry *rte,
 				List *rangeTables, char *targetBuf, size_t targetBufSize);
 static char *TargetEntryToString(TargetEntry *targetEntry, List *rtable,
 				bool renameTargets, char *outBuf, size_t outBufSize);
-static char *VarToString(Var *var, List *rtable, bool renameVar,
-				char *varBuf, size_t varBufSize);
+static char *VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
+				size_t varBufSize);
 
-static void ReplaceChars(char *string, char target, char replacement,
-				size_t sizeLimit);
-
-int64 CreateMaterializedView(char *viewName, char *selectQuery);
-double GetPlanCost(Plan *plan);
-
+// Query rewrite operations
 static void RewriteTargetList(Query *query, MatView *matView);
 static void RewriteJoinTree(Query *query, MatView *matView);
-static void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
-				int fromClauseIndex, size_t fromClauseLength);
+void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
+				int fromClauseIndex, size_t fromClauseLength, int *joinCount,
+				int *joinsRemoved);
 static void CopyRte(RangeTblEntry *destination, RangeTblEntry *copyTarget);
 static bool DoesMatViewContainRTE(RangeTblEntry *rte, MatView *matView);
 
+// MatView selection functions
 static List *GetMatchingMatViews(Query *query);
 static bool DoesQueryMatchMatView(Query *query, MatView *matView);
 static bool IsTargetListMatch(List *rtable, List *targetList, MatView *matView);
 static bool AreTargetEntriesEqual(TargetEntry *targetEntryOne, List *rtableOne,
 				TargetEntry *targetEntryTwo, List *rtableTwo);
 
-static MatView *UnparseQuery(Query *query);
-static RangeTblEntry *FindRte(Oid relid, List *rtable);
-static List *UnparseTargetList(List *targetList, List *rtable,
-				bool renameTargets, char *selectTargetsBuf,
-				size_t selectTargetsBufSize);
-static TargetEntry *CreateRenamedTargetEntry(TargetEntry *baseTE, char *newName,
-				bool flattenExprTree);
-static void ResetVarno(Expr *expr, Index newVarno);
-static char *UnparseRangeTableEntries(List *rtable);
-static void UnparseFromExprRecurs(Query *rootQuery, Node *node,
-				int fromClauseIndex, size_t fromClauseLength, char *selectQuery,
-				size_t selectQuerySize);
-static char *UnparseGroupClause(List *groupClause, List *targetList,
-				List *rtable);
-
+// MatView generation operations
+int64 CreateMaterializedView(char *viewName, char *selectQuery);
 static void CreateRelevantMatViews();
 static void PopulateMatViewRenamedRTable(MatView *matView);
-static void SetVarattno(Expr *expr, AttrNumber varattno);
-static void SetVarno(Expr *expr, Index varno);
-
 static List *GetCostlyQueries(double costCutoffRatio);
 static List *GenerateInterestingQueries(List *queryPlanStats);
 static List *PruneQueries(List *queries);
 
-static void CheckInitState();
+// Utilities
+static void FreeMatView(MatView *matView);
+static void ReplaceChars(char *string, char target, char replacement,
+				size_t sizeLimit);
+static double GetPlanCost(Plan *plan);
+static void ResetVarno(Expr *expr, Index newVarno);
+static void SetVarattno(Expr *expr, AttrNumber varattno);
+static void SetVarno(Expr *expr, Index varno);
+static RangeTblEntry *FindRte(Oid relid, List *rtable);
 static void PrintQueryInfo(Query *query);
 
 MemoryContext SwitchToAutoMatViewContext()
@@ -346,398 +359,6 @@ void PrintTableQueryStats(TableQueryStats *stats)
 			stats->tableName, stats->selectCounts, stats->updateCounts, stats->deleteCounts);
 }
 
-void FreeMatView(MatView *matView)
-{
-	if (matView != NULL)
-	{
-		pfree(matView->baseQuery);
-		pfree(matView->name);
-		pfree(matView->selectQuery);
-		pfree(matView);
-	}
-}
-
-void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
-				List *rangeTables, char *varStrBuf, size_t varStrBufSize)
-{
-	RangeTblEntry *targetRte;
-
-	targetRte = rte;
-
-	// Special case for Join RTEs since their aliasname is "unnamed_join"
-	if (rte->rtekind == RTE_JOIN)
-	{
-		RangeTblEntry *varRte = rt_fetch(var->varno, rangeTables);
-		elog(LOG, "Var from table=%s: %s", varRte->eref->aliasname,
-						get_colname(varRte, var));
-		// TODO: Ensure leftRte index is correct.
-//		 If rte is an RTE_JOIN, left should be the right table of last join
-		RangeTblEntry *leftRte = rt_fetch(joinExpr->rtindex - 3, rangeTables);
-		RangeTblEntry *rightRte = right_join_table(joinExpr, rangeTables);
-//		elog(LOG, "CreateJoinVarStr found JOIN RTE: rtindex=%d, name=%s, left.name=%s, right.name=%s",
-//						joinExpr->rtindex, rte->eref->aliasname,
-//						leftRte->eref->aliasname, rightRte->eref->aliasname);
-
-		// Var was from left RTE
-		// TODO: ensure this logic is correct
-		if (var->varattno <= leftRte->eref->colnames->length)
-		{
-			elog(LOG, "Renaming tableName in Join RTE to left table: %s", leftRte->eref->aliasname);
-			targetRte = leftRte;
-		}
-		// Var from right RTE
-		else
-		{
-			elog(LOG, "Renaming tableName in Join RTE to right table: %s", rightRte->eref->aliasname);
-			targetRte = rightRte;
-		}
-	}
-
-	sprintf(varStrBuf,
-			"%s.%s",
-			targetRte->eref->aliasname,
-			get_colname(targetRte, var));
-
-	elog(LOG, "Var str for rtekind=%d, varattno=%d %s",
-					rte->rtekind, var->varattno, varStrBuf);
-
-	if (var->varno == INDEX_VAR)
-	{
-		elog(LOG, "Var is an index var");
-	}
-
-}
-
-/**
- * Returns a string representation of the qualifiers.
- * NOTE: returned char * must be pfreed.
- */
-char *AnalyzePlanQuals(List *quals, RangeTblEntry *leftRte,
-				RangeTblEntry *rightRte, JoinExpr *joinExpr, List *rangeTables)
-{
-	ListCell *qualCell;
-	Expr *expr;
-	size_t qualBufSize = 512;
-	char *qualBuf;
-
-	qualBuf = palloc(sizeof(char) * qualBufSize);
-	memset(qualBuf, 0, qualBufSize);
-
-	if (quals != NIL)
-	{
-		foreach(qualCell, quals)
-		{
-			expr = (Expr *) lfirst(qualCell);
-//			elog(LOG, "Qualifier expression: %d", nodeTag(expr));
-
-			switch (nodeTag(expr))
-			{
-				case T_OpExpr:
-				{
-					OpExpr *opExpr = (OpExpr *) expr;
-//					elog(LOG, "Found OpExpr opno=%d, number of args=%d",
-//					opExpr->opno,
-//					opExpr->args != NULL ? opExpr->args->length : 0);
-
-					if (opExpr->args != NULL)
-					{
-						if (opExpr->args->length == 1)
-						{
-							elog(WARNING, "Unary Operation Expressions are not currently supported");
-							// TODO: handle unary op
-						}
-						else if (opExpr->args->length == 2)
-						{
-							char leftVarStr[256], rightVarStr[256];
-							Expr *leftExpr = (Expr *) linitial(opExpr->args);
-							Expr *rightExpr = (Expr *) lsecond(opExpr->args);
-
-							memset(leftVarStr, 0, 256);
-							memset(rightVarStr, 0, 256);
-							ExprToString(leftExpr, joinExpr, leftRte,
-											rangeTables, leftVarStr, 256);
-							ExprToString(rightExpr, joinExpr, rightRte,
-											rangeTables, rightVarStr, 256);
-
-							if (qualBuf != NULL)
-							{
-								snprintf(qualBuf, qualBufSize,
-											"%s %s %s",
-											leftVarStr,
-											// TODO: Figure out opno to string mapping
-											opExpr->opno == 96 ?
-															"=" : "UNKNOWN",
-											rightVarStr);
-							}
-							else
-							{
-								elog(WARNING, "QualBuf was NULL");
-							}
-						}
-						else
-						{
-							elog(
-									WARNING, "Not currently handling OpExprs with more than 2 args");
-						}
-					}
-					break;
-				}
-				case T_BoolExpr:
-				{
-					BoolExpr *boolExpr = (BoolExpr *) expr;
-					elog(
-							LOG, "Found boolean expression of type %s with %d args",
-							boolExpr->boolop == AND_EXPR ? "AND" : boolExpr->boolop == OR_EXPR ? "OR" : "NOT",
-							boolExpr->args != NIL ? boolExpr->args->length : 0);
-					break;
-				}
-				default:
-					elog(LOG, "Unrecognized qualifier expression");
-			}
-		}
-	}
-
-	return qualBuf;
-}
-
-void ExprToStringQuery(Expr *expr, Query *rootQuery, char *targetBuf)
-{
-	switch (nodeTag(expr))
-	{
-		case T_Var:
-			elog(LOG, "Found Var in Expr");
-			break;
-		case T_Aggref:
-		{
-			Aggref *aggref = (Aggref *) expr;
-			elog(LOG, "Found Aggref in Expr");
-			break;
-		}
-		default:
-			elog(LOG, "Unrecognized Expr tag: %d", nodeTag(expr));
-	}
-}
-
-char *AggrefToString(TargetEntry *aggrefEntry, List *rtable, bool renameAggref,
-				char *aggrefStrBuf, size_t aggrefStrBufSize)
-{
-	Aggref *aggref;
-	ListCell *argCell;
-	TargetEntry *arg;
-	char targetStr[TARGET_BUFFER_SIZE];
-	char copyBuf[TARGET_BUFFER_SIZE];
-	char *renamedBuf = NULL;
-
-	memset(targetStr, 0, TARGET_BUFFER_SIZE);
-	aggref = (Aggref *) aggrefEntry->expr;
-
-	if (aggref->aggstar == true)
-	{
-		strcpy(targetStr, STAR_COL);
-	}
-	else
-	{
-		UnparseTargetList(aggref->args, rtable, false, targetStr,
-		TARGET_BUFFER_SIZE);
-	}
-
-	if (renameAggref == true)
-	{
-		if (aggref->aggstar == true)
-		{
-			strcpy(copyBuf, RENAMED_STAR_COL);
-		}
-		else
-		{
-			strncpy(copyBuf, targetStr, TARGET_BUFFER_SIZE);
-			ReplaceChars(copyBuf, '.', '_', TARGET_BUFFER_SIZE);
-		}
-
-		renamedBuf = palloc(sizeof(char) * TARGET_BUFFER_SIZE);
-		snprintf(renamedBuf, TARGET_BUFFER_SIZE, "%s_%s", aggrefEntry->resname,
-					copyBuf);
-		snprintf(aggrefStrBuf, aggrefStrBufSize, "%s(%s) AS %s",
-					aggrefEntry->resname, targetStr, renamedBuf);
-	}
-	else
-	{
-		snprintf(aggrefStrBuf, aggrefStrBufSize, "%s(%s)", aggrefEntry->resname,
-					targetStr);
-	}
-
-	elog(LOG, "AggrefToString result: %s", aggrefStrBuf);
-
-	return renamedBuf;
-}
-
-void ExprToString(Expr *expr, JoinExpr *join, RangeTblEntry *rte,
-				List *rangeTables, char *targetBuf, size_t targetBufSize)
-{
-//	elog(LOG, "ExprToString Expr tag: %d", nodeTag(expr));
-
-	switch (nodeTag(expr))
-	{
-		case T_Var:
-			VarToString((Var *) expr, rangeTables, false, targetBuf, targetBufSize);
-			elog(LOG, "ExprToString: converted Var to %s", targetBuf);
-			break;
-	}
-
-}
-
-char *TargetEntryToString(TargetEntry *targetEntry, List *rtable,
-				bool renameTargets, char *outBuf, size_t outBufSize)
-{
-	char *targetEntryRename = NULL;
-
-	switch (nodeTag(targetEntry->expr))
-	{
-		case T_Var:
-		{
-//			elog(LOG, "TargetEntryToString: converting Var to string. expr=%p",
-//			targetEntry->expr);
-			Var *var = (Var *) targetEntry->expr;
-//			elog(LOG, "TargetEntryToString: var.varno=%d, rtable length=%d",
-//			var->varno, rtable->length);
-			targetEntryRename = VarToString(var, rtable, renameTargets,
-											outBuf, outBufSize);
-			break;
-		}
-		case T_Aggref:
-//			elog(LOG, "TargetEntryToString: converting Aggref to string...");
-			targetEntryRename = AggrefToString(targetEntry, rtable, true,
-												outBuf, outBufSize);
-			break;
-		default:
-			elog(WARNING, "Failed to convert TargetEntry to string");
-	}
-
-	return targetEntryRename;
-}
-
-char *VarToString(Var *var, List *rtable, bool renameVar,
-				char *varBuf, size_t varBufSize)
-{
-	RangeTblEntry *varRte;
-	char *tableName, *colName, *renamedColName;
-	char *returnedVarRename = NULL;
-
-	varRte = rt_fetch(var->varno, rtable);
-	tableName = varRte->eref->aliasname;
-//	elog(LOG, "VarToString fetched RTE=%s", varRte != NULL ? varRte->eref->aliasname : "NULL");
-
-	if (var->varattno > 0)
-	{
-//		elog(
-//				LOG, "VarToString getting colName from colnames with length=%d and varattno=%d, colname listcell=%s",
-//				varRte->eref->colnames != NIL ? varRte->eref->colnames->length : 0,
-//				var->varattno, get_colname(varRte, var));
-		colName = renamedColName = get_colname(varRte, var);
-//										strVal(lfirst(list_nth_cell(varRte->eref->colnames, var->varattno - 1)));
-//		elog(LOG, "VarToString: colname=%s", colName);
-
-//		if (renameVar)
-//		{
-//			elog(
-//					LOG, "VarToString renaming Var. targetEntry->resname=%s", targetEntry->resname);
-//		}
-	}
-	else
-	{
-		colName = STAR_COL;
-		renamedColName = RENAMED_STAR_COL;
-	}
-
-	if (renameVar == true)
-	{
-//		elog(LOG, "VarToString renaming Var");
-		returnedVarRename = palloc(sizeof(char) * TARGET_BUFFER_SIZE);
-		snprintf(returnedVarRename, TARGET_BUFFER_SIZE, "%s_%s", tableName,
-					renamedColName);
-		snprintf(varBuf, varBufSize, "%s.%s AS %s", tableName, colName,
-					returnedVarRename);
-	}
-	else
-	{
-		snprintf(varBuf, varBufSize, "%s.%s", tableName, colName);
-	}
-
-//	elog(LOG, "VarToString result: %s", varBuf);
-	return returnedVarRename;
-}
-
-/**
- * string MUST be null-terminated.
- */
-void ReplaceChars(char *string, char target, char replacement, size_t sizeLimit)
-{
-	size_t index;
-
-	for (index = 0; index < sizeLimit && string[index] != '\0'; index++)
-	{
-		if (string[index] == target)
-		{
-			string[index] = replacement;
-		}
-	}
-}
-
-double GetPlanCost(Plan *plan)
-{
-	double cost;
-	ListCell *targetCell;
-	char *planTag;
-
-	cost = 0;
-
-	if (plan != NULL)
-	{
-//		elog(
-//				LOG, "Plan node type=%d, cost=%f, tuples=%f, tupleWidth=%d",
-//				nodeTag(plan), plan->total_cost, plan->plan_rows, plan->plan_width);
-		switch (nodeTag(plan))
-		{
-			case T_Result:
-//				elog(LOG, "Result plan node found");
-				planTag = "Result";
-				break;
-			case T_SeqScan: // 18
-				planTag = "SequenceScan";
-				break;
-			case T_Join:
-			case T_MergeJoin:
-			case T_HashJoin:
-				planTag = "Join";
-//				elog(LOG, "Join plan node found");
-				break;
-			case T_Hash:
-				planTag = "Hash";
-				break;
-			default:
-				planTag = "Unknown";
-		}
-
-//		AnalyzePlanQuals(plan->qual);
-
-		foreach(targetCell, plan->targetlist)
-		{
-			TargetEntry *targetEntry = lfirst_node(TargetEntry, targetCell);
-			// Skip junk entries and those with no table
-			if (targetEntry->resjunk
-							|| targetEntry->resorigtbl
-											== 0|| targetEntry->resname == NULL)
-			{
-				continue;
-			}
-		}
-
-		cost = plan->total_cost + GetPlanCost(plan->lefttree)
-						+ GetPlanCost(plan->righttree);
-	}
-
-	return cost;
-}
-
 MatView *UnparseQuery(Query *query)
 {
 	ListCell *listCell;
@@ -896,37 +517,6 @@ TargetEntry *CreateRenamedTargetEntry(TargetEntry *baseTE, char *newName,
 	return renamedTE;
 }
 
-void ResetVarno(Expr *expr, Index newVarno)
-{
-	switch (nodeTag(expr))
-	{
-		case T_Var:
-		{
-			Var *var = (Var *) expr;
-			var->varno = newVarno;
-//			elog(LOG, "Setting varno of Var to %d", newVarno);
-			break;
-		}
-		case T_Aggref:
-		{
-			Aggref *aggref = (Aggref *) expr;
-			ListCell *argCell;
-			TargetEntry *argTE;
-			elog(LOG, "Setting varno of Vars in Aggref to %d", newVarno);
-
-			foreach(argCell, aggref->args)
-			{
-				argTE = lfirst_node(TargetEntry, argCell);
-				ResetVarno(argTE->expr, newVarno);
-			}
-			break;
-		}
-		default:
-			elog(
-					WARNING, "Failed to create renamed TargetEntry due to unrecognized nodeTag");
-	}
-}
-
 /**
  * Unparse a List (of RangeTblEntry) into the FROM clause of a query string.
  * NOTE: Returned pointer must be pfree'd.
@@ -962,27 +552,6 @@ char *UnparseRangeTableEntries(List *rtable)
 	}
 
 	return clauseString;
-}
-
-/**
- * Find a particular RangeTblEntry by its Oid within a list of RTEs.
- */
-RangeTblEntry *FindRte(Oid relid, List *rtable)
-{
-	ListCell *rteCell;
-	RangeTblEntry *rte;
-
-	foreach(rteCell, rtable)
-	{
-		rte = lfirst_node(RangeTblEntry, rteCell);
-
-		if (rte->relid == relid)
-		{
-			return rte;
-		}
-	}
-
-	return NULL;
 }
 
 void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
@@ -1051,34 +620,48 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
 										selectQuery, selectQuerySize);
 			}
 
-			joinRte = rt_fetch(joinExpr->rtindex, rootQuery->rtable);
-			leftRte = left_join_table(joinExpr, rootQuery->rtable);
-			rightRte = right_join_table(joinExpr, rootQuery->rtable);
-			elog(LOG, "%s %s %s", leftRte->eref->aliasname, joinTag, rightRte->eref->aliasname);
-			qualStr = AnalyzePlanQuals(joinExpr->quals, leftRte, rightRte,
-										joinExpr, rootQuery->rtable);
-
-			if (leftRte->rtekind == RTE_JOIN)
+			if (joinExpr->rtindex != 0)
 			{
-				snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s ON %s", joinTag,
-							rightRte->eref->aliasname, qualStr);
+				joinRte = rt_fetch(joinExpr->rtindex, rootQuery->rtable);
+				leftRte = left_join_table(joinExpr, rootQuery->rtable);
+				rightRte = right_join_table(joinExpr, rootQuery->rtable);
+				elog(LOG, "Unparsed %s %s %s", leftRte->eref->aliasname,
+				joinTag, rightRte->eref->aliasname);
+				qualStr = UnparseQuals(joinExpr->quals, leftRte, rightRte,
+										joinExpr, rootQuery->rtable);
+				elog(LOG, "Unparsed qualifiers for %s %s %s",
+				leftRte->eref->aliasname,
+				joinTag, rightRte->eref->aliasname);
+
+				if (leftRte->rtekind == RTE_JOIN)
+				{
+					snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s ON %s",
+								joinTag, rightRte->eref->aliasname, qualStr);
+				}
+				else
+				{
+					snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s %s ON %s",
+								leftRte->eref->aliasname, joinTag,
+								rightRte->eref->aliasname, qualStr);
+				}
+
+				pfree(qualStr);
+				qualStr = NULL;
+
+				strncat(selectQuery, joinBuf, selectQuerySize);
+//			AnalyzePlanQuals(joinExpr->quals, leftRte, rightRte);
 			}
 			else
 			{
-				snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s %s ON %s",
-							leftRte->eref->aliasname, joinTag,
-							rightRte->eref->aliasname, qualStr);
+				elog(LOG, "Found JoinExpr.rtindex == 0. Skipping...");
 			}
-
-			pfree(qualStr);
-			qualStr = NULL;
-
-			strncat(selectQuery, joinBuf, selectQuerySize);
-//			AnalyzePlanQuals(joinExpr->quals, leftRte, rightRte);
 		}
 		else if (IsA(node, RangeTblRef))
 		{
+			elog(LOG, "UnparseFromExprRecurs: found RangeTblRef in jointree");
 			RangeTblRef *rtRef = (RangeTblRef *) node;
+			elog(
+					LOG, "UnparseFromExprRecurs: RangeTblRef.rtindex=%d", rtRef->rtindex);
 			RangeTblEntry *rte = rt_fetch(rtRef->rtindex, rootQuery->rtable);
 
 			if (fromClauseIndex < fromClauseLength - 1)
@@ -1164,6 +747,299 @@ char *UnparseGroupClause(List *groupClause, List *targetList, List *rtable)
 	return groupClauseStr;
 }
 
+void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
+				List *rangeTables, char *varStrBuf, size_t varStrBufSize)
+{
+	RangeTblEntry *targetRte;
+
+	targetRte = rte;
+
+	// Special case for Join RTEs since their aliasname is "unnamed_join"
+	if (rte->rtekind == RTE_JOIN)
+	{
+		RangeTblEntry *varRte = rt_fetch(var->varno, rangeTables);
+		elog(LOG, "Var from table=%s: %s", varRte->eref->aliasname,
+		get_colname(varRte, var));
+		// TODO: Ensure leftRte index is correct.
+//		 If rte is an RTE_JOIN, left should be the right table of last join
+		RangeTblEntry *leftRte = rt_fetch(joinExpr->rtindex - 3, rangeTables);
+		RangeTblEntry *rightRte = right_join_table(joinExpr, rangeTables);
+//		elog(LOG, "CreateJoinVarStr found JOIN RTE: rtindex=%d, name=%s, left.name=%s, right.name=%s",
+//						joinExpr->rtindex, rte->eref->aliasname,
+//						leftRte->eref->aliasname, rightRte->eref->aliasname);
+
+// Var was from left RTE
+// TODO: ensure this logic is correct
+		if (var->varattno <= leftRte->eref->colnames->length)
+		{
+			elog(
+					LOG, "Renaming tableName in Join RTE to left table: %s", leftRte->eref->aliasname);
+			targetRte = leftRte;
+		}
+		// Var from right RTE
+		else
+		{
+			elog(
+					LOG, "Renaming tableName in Join RTE to right table: %s", rightRte->eref->aliasname);
+			targetRte = rightRte;
+		}
+	}
+
+	sprintf(varStrBuf, "%s.%s", targetRte->eref->aliasname,
+			get_colname(targetRte, var));
+
+	elog(LOG, "Var str for rtekind=%d, varattno=%d %s",
+	rte->rtekind, var->varattno, varStrBuf);
+
+	if (var->varno == INDEX_VAR)
+	{
+		elog(LOG, "Var is an index var");
+	}
+
+}
+
+/**
+ * Returns a string representation of the qualifiers.
+ * NOTE: returned char * must be pfreed.
+ */
+char *UnparseQuals(List *quals, RangeTblEntry *leftRte, RangeTblEntry *rightRte,
+				JoinExpr *joinExpr, List *rangeTables)
+{
+	ListCell *qualCell;
+	Expr *expr;
+	size_t qualBufSize = 512;
+	char *qualBuf;
+
+	qualBuf = palloc(sizeof(char) * qualBufSize);
+	memset(qualBuf, 0, qualBufSize);
+
+	if (quals != NIL)
+	{
+		foreach(qualCell, quals)
+		{
+			expr = (Expr *) lfirst(qualCell);
+//			elog(LOG, "Qualifier expression: %d", nodeTag(expr));
+
+			switch (nodeTag(expr))
+			{
+				case T_OpExpr:
+				{
+					OpExpr *opExpr = (OpExpr *) expr;
+//					elog(LOG, "Found OpExpr opno=%d, number of args=%d",
+//					opExpr->opno,
+//					opExpr->args != NULL ? opExpr->args->length : 0);
+
+					if (opExpr->args != NULL)
+					{
+						if (opExpr->args->length == 1)
+						{
+							elog(
+									WARNING, "Unary Operation Expressions are not currently supported");
+							// TODO: handle unary op
+						}
+						else if (opExpr->args->length == 2)
+						{
+							char leftVarStr[256], rightVarStr[256];
+							Expr *leftExpr = (Expr *) linitial(opExpr->args);
+							Expr *rightExpr = (Expr *) lsecond(opExpr->args);
+
+							memset(leftVarStr, 0, 256);
+							memset(rightVarStr, 0, 256);
+							ExprToString(leftExpr, joinExpr, leftRte,
+											rangeTables, leftVarStr, 256);
+							ExprToString(rightExpr, joinExpr, rightRte,
+											rangeTables, rightVarStr, 256);
+
+							if (qualBuf != NULL)
+							{
+								snprintf(qualBuf, qualBufSize,
+											"%s %s %s",
+											leftVarStr,
+											// TODO: Figure out opno to string mapping
+											opExpr->opno == 96 ?
+															"=" : "UNKNOWN",
+											rightVarStr);
+							}
+							else
+							{
+								elog(WARNING, "QualBuf was NULL");
+							}
+						}
+						else
+						{
+							elog(
+									WARNING, "Not currently handling OpExprs with more than 2 args");
+						}
+					}
+					break;
+				}
+				case T_BoolExpr:
+				{
+					BoolExpr *boolExpr = (BoolExpr *) expr;
+					elog(
+							LOG, "Found boolean expression of type %s with %d args",
+							boolExpr->boolop == AND_EXPR ? "AND" : boolExpr->boolop == OR_EXPR ? "OR" : "NOT",
+							boolExpr->args != NIL ? boolExpr->args->length : 0);
+					break;
+				}
+				default:
+					elog(LOG, "Unrecognized qualifier expression");
+			}
+		}
+	}
+
+	return qualBuf;
+}
+
+char *AggrefToString(TargetEntry *aggrefEntry, List *rtable, bool renameAggref,
+				char *aggrefStrBuf, size_t aggrefStrBufSize)
+{
+	Aggref *aggref;
+	ListCell *argCell;
+	TargetEntry *arg;
+	char targetStr[TARGET_BUFFER_SIZE];
+	char copyBuf[TARGET_BUFFER_SIZE];
+	char *renamedBuf = NULL;
+
+	memset(targetStr, 0, TARGET_BUFFER_SIZE);
+	aggref = (Aggref *) aggrefEntry->expr;
+
+	if (aggref->aggstar == true)
+	{
+		strcpy(targetStr, STAR_COL);
+	}
+	else
+	{
+		UnparseTargetList(aggref->args, rtable, false, targetStr,
+		TARGET_BUFFER_SIZE);
+	}
+
+	if (renameAggref == true)
+	{
+		if (aggref->aggstar == true)
+		{
+			strcpy(copyBuf, RENAMED_STAR_COL);
+		}
+		else
+		{
+			strncpy(copyBuf, targetStr, TARGET_BUFFER_SIZE);
+			ReplaceChars(copyBuf, '.', '_', TARGET_BUFFER_SIZE);
+		}
+
+		renamedBuf = palloc(sizeof(char) * TARGET_BUFFER_SIZE);
+		snprintf(renamedBuf, TARGET_BUFFER_SIZE, "%s_%s", aggrefEntry->resname,
+					copyBuf);
+		snprintf(aggrefStrBuf, aggrefStrBufSize, "%s(%s) AS %s",
+					aggrefEntry->resname, targetStr, renamedBuf);
+	}
+	else
+	{
+		snprintf(aggrefStrBuf, aggrefStrBufSize, "%s(%s)", aggrefEntry->resname,
+					targetStr);
+	}
+
+	elog(LOG, "AggrefToString result: %s", aggrefStrBuf);
+
+	return renamedBuf;
+}
+
+void ExprToString(Expr *expr, JoinExpr *join, RangeTblEntry *rte,
+				List *rangeTables, char *targetBuf, size_t targetBufSize)
+{
+//	elog(LOG, "ExprToString Expr tag: %d", nodeTag(expr));
+
+	switch (nodeTag(expr))
+	{
+		case T_Var:
+			VarToString((Var *) expr, rangeTables, false, targetBuf,
+						targetBufSize);
+			elog(LOG, "ExprToString: converted Var to %s", targetBuf);
+			break;
+	}
+
+}
+
+char *TargetEntryToString(TargetEntry *targetEntry, List *rtable,
+				bool renameTargets, char *outBuf, size_t outBufSize)
+{
+	char *targetEntryRename = NULL;
+
+	switch (nodeTag(targetEntry->expr))
+	{
+		case T_Var:
+		{
+//			elog(LOG, "TargetEntryToString: converting Var to string. expr=%p",
+//			targetEntry->expr);
+			Var *var = (Var *) targetEntry->expr;
+//			elog(LOG, "TargetEntryToString: var.varno=%d, rtable length=%d",
+//			var->varno, rtable->length);
+			targetEntryRename = VarToString(var, rtable, renameTargets, outBuf,
+											outBufSize);
+			break;
+		}
+		case T_Aggref:
+//			elog(LOG, "TargetEntryToString: converting Aggref to string...");
+			targetEntryRename = AggrefToString(targetEntry, rtable, true,
+												outBuf, outBufSize);
+			break;
+		default:
+			elog(WARNING, "Failed to convert TargetEntry to string");
+	}
+
+	return targetEntryRename;
+}
+
+char *VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
+				size_t varBufSize)
+{
+	RangeTblEntry *varRte;
+	char *tableName, *colName, *renamedColName;
+	char *returnedVarRename = NULL;
+
+	varRte = rt_fetch(var->varno, rtable);
+	tableName = varRte->eref->aliasname;
+//	elog(LOG, "VarToString fetched RTE=%s", varRte != NULL ? varRte->eref->aliasname : "NULL");
+
+	if (var->varattno > 0)
+	{
+//		elog(
+//				LOG, "VarToString getting colName from colnames with length=%d and varattno=%d, colname listcell=%s",
+//				varRte->eref->colnames != NIL ? varRte->eref->colnames->length : 0,
+//				var->varattno, get_colname(varRte, var));
+		colName = renamedColName = get_colname(varRte, var);
+//										strVal(lfirst(list_nth_cell(varRte->eref->colnames, var->varattno - 1)));
+//		elog(LOG, "VarToString: colname=%s", colName);
+
+//		if (renameVar)
+//		{
+//			elog(
+//					LOG, "VarToString renaming Var. targetEntry->resname=%s", targetEntry->resname);
+//		}
+	}
+	else
+	{
+		colName = STAR_COL;
+		renamedColName = RENAMED_STAR_COL;
+	}
+
+	if (renameVar == true)
+	{
+//		elog(LOG, "VarToString renaming Var");
+		returnedVarRename = palloc(sizeof(char) * TARGET_BUFFER_SIZE);
+		snprintf(returnedVarRename, TARGET_BUFFER_SIZE, "%s_%s", tableName,
+					renamedColName);
+		snprintf(varBuf, varBufSize, "%s.%s AS %s", tableName, colName,
+					returnedVarRename);
+	}
+	else
+	{
+		snprintf(varBuf, varBufSize, "%s.%s", tableName, colName);
+	}
+
+//	elog(LOG, "VarToString result: %s", varBuf);
+	return returnedVarRename;
+}
+
 void AddQuery(Query *query, PlannedStmt *plannedStatement)
 {
 	MemoryContext oldContext;
@@ -1185,6 +1061,33 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
 	}
 
 	MemoryContextSwitchTo(oldContext);
+}
+
+int64 CreateMaterializedView(char *viewName, char *selectQuery)
+{
+	int ret;
+	int64 processed;
+	char resultQuery[1000];
+
+	sprintf(resultQuery, "CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS %s;",
+			viewName, selectQuery);
+
+	SPI_connect();
+	ret = SPI_exec(resultQuery, 0);
+	processed = SPI_processed;
+
+	if (ret > 0 && SPI_tuptable != NULL)
+	{
+		elog(LOG, "Found returned tuples from SPI_tuptable");
+	}
+	else
+	{
+		elog(LOG, "No returned tuples in SPI_tuptable");
+	}
+
+	SPI_finish();
+
+	return processed;
 }
 
 void CreateRelevantMatViews()
@@ -1254,68 +1157,6 @@ void PopulateMatViewRenamedRTable(MatView *matView)
 	UnparseTargetList(matView->renamedTargetList, matView->renamedRtable, false,
 						targetListBuf, QUERY_BUFFER_SIZE);
 	elog(LOG, "Unparsed renamed targetList: %s", targetListBuf);
-}
-
-void SetVarattno(Expr *expr, AttrNumber varattno)
-{
-	switch (nodeTag(expr))
-	{
-		case T_Var:
-		{
-			elog(LOG, "Setting varattno for Var to %d", varattno);
-			Var *var = (Var *) expr;
-			var->varattno = varattno;
-			break;
-		}
-		case T_Aggref:
-		{
-			Aggref *aggref = (Aggref *) expr;
-			ListCell *argCell;
-			TargetEntry *argTE;
-
-			elog(LOG, "Setting varattno for args in Aggref to %d", varattno);
-
-			foreach(argCell, aggref->args)
-			{
-				argTE = lfirst_node(TargetEntry, argCell);
-				SetVarattno(argTE->expr, varattno);
-			}
-			break;
-		}
-		default:
-			elog(WARNING, "Failed to set varattno for unrecognized node");
-	}
-}
-
-void SetVarno(Expr *expr, Index varno)
-{
-	switch (nodeTag(expr))
-	{
-		case T_Var:
-		{
-			elog(LOG, "Setting varno for Var to %d", varno);
-			Var *var = (Var *) expr;
-			var->varno = varno;
-			break;
-		}
-		case T_Aggref:
-		{
-			Aggref *aggref = (Aggref *) expr;
-			ListCell *argCell;
-			TargetEntry *argTE;
-
-			elog(LOG, "Setting varno for args in Aggref to %d", varno);
-
-			foreach(argCell, aggref->args)
-			{
-				argTE = lfirst_node(TargetEntry, argCell);
-				SetVarno(argTE->expr, varno);
-			}
-			break;
-		}
-		default:
-			elog(WARNING, "Failed to set varno for unrecognized node");
-	}
 }
 
 /**
@@ -1412,34 +1253,8 @@ List *GenerateInterestingQueries(List *queryPlanStats)
 List *PruneQueries(List *queries)
 {
 	// TODO: actually prune queries
+	// TODO: remove duplicates
 	return queries;
-}
-
-int64 CreateMaterializedView(char *viewName, char *selectQuery)
-{
-	int ret;
-	int64 processed;
-	char resultQuery[1000];
-
-	sprintf(resultQuery, "CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS %s;",
-			viewName, selectQuery);
-
-	SPI_connect();
-	ret = SPI_exec(resultQuery, 0);
-	processed = SPI_processed;
-
-	if (ret > 0 && SPI_tuptable != NULL)
-	{
-		elog(LOG, "Found returned tuples from SPI_tuptable");
-	}
-	else
-	{
-		elog(LOG, "No returned tuples in SPI_tuptable");
-	}
-
-	SPI_finish();
-
-	return processed;
 }
 
 bool IsCollectingQueries()
@@ -1462,10 +1277,10 @@ char *RewriteQuery(Query *query, MatView *matView)
 	{
 		RewriteTargetList(queryCopy, matView);
 		RewriteJoinTree(queryCopy, matView);
-		// TODO: actually rewrite query
-//		MatView *createdView = UnparseQuery(query);
-//		rewrittenQuery = pstrdup(createdView->selectQuery);
-//		FreeMatView(createdView);
+
+		MatView *createdView = UnparseQuery(queryCopy);
+		rewrittenQuery = pstrdup(createdView->selectQuery);
+		FreeMatView(createdView);
 	}
 	else
 	{
@@ -1572,6 +1387,8 @@ void RewriteJoinTree(Query *query, MatView *matView)
 	int joinListLength;
 	ListCell *fromCell;
 	int joinIndex = 0;
+	int joinCount = 0;
+	int joinsRemoved = 0;
 
 	if (query->jointree != NULL)
 	{
@@ -1579,16 +1396,40 @@ void RewriteJoinTree(Query *query, MatView *matView)
 		foreach(fromCell, query->jointree->fromlist)
 		{
 			RewriteJoinTreeRecurs(query, matView, lfirst(fromCell), joinIndex++,
-									joinListLength);
+									joinListLength, &joinCount, &joinsRemoved);
 		}
+
+		if (joinsRemoved == joinCount)
+		{
+			elog(
+					LOG, "All existing joins were removed. Setting jointree to single RangeTblRef");
+
+			if (query->jointree->quals != NULL)
+			{
+				pfree(query->jointree->quals);
+				query->jointree->quals = NULL;
+			}
+			if (query->jointree->fromlist != NIL)
+			{
+				list_free(query->jointree->fromlist);
+				query->jointree->fromlist = NIL;
+			}
+
+			RangeTblRef *matViewRef = makeNode(RangeTblRef);
+			// Set rtindex to query.rtable.length since the MatView RTE was added to the end of query.rtable
+			matViewRef->rtindex = query->rtable->length;
+			query->jointree->fromlist = list_make1(matViewRef);
+		}
+		elog(LOG, "Successfully rewrote Query join tree");
 	}
 }
 
 void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
-				int fromClauseIndex, size_t fromClauseLength)
+				int fromClauseIndex, size_t fromClauseLength, int *joinCount,
+				int *joinsRemoved)
 {
 	RangeTblEntry *joinRte, *leftRte, *rightRte;
-	List *removedJoins = NIL;
+//	List *removedRTEs = NIL;
 
 	if (node != NULL)
 	{
@@ -1598,16 +1439,20 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
 			JoinExpr *joinExpr = (JoinExpr *) node;
 			bool containsLeftRte, containsRightRte;
 
+			(*joinCount)++;
+
 			// NOTE: Un-parsing of mixed JOIN ON clauses with table cross products will fail
 			if (IsA(joinExpr->larg, JoinExpr))
 			{
 				RewriteJoinTreeRecurs(rootQuery, matView, joinExpr->larg,
-									  fromClauseIndex, fromClauseLength);
+										fromClauseIndex, fromClauseLength,
+										joinCount, joinsRemoved);
 			}
 			if (IsA(joinExpr->rarg, JoinExpr))
 			{
 				RewriteJoinTreeRecurs(rootQuery, matView, joinExpr->rarg,
-									  fromClauseIndex, fromClauseLength);
+										fromClauseIndex, fromClauseLength,
+										joinCount, joinsRemoved);
 			}
 
 			joinRte = rt_fetch(joinExpr->rtindex, rootQuery->rtable);
@@ -1618,27 +1463,51 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
 
 			if (containsLeftRte && containsRightRte)
 			{
-				// TODO: Remove this join
-				elog(LOG, "Replacing JOIN of leftTable=%s and rightTable=%s with MatView table=%s",
-					 leftRte->eref->aliasname,
-					 rightRte->eref->aliasname,
-					 ((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
+				(*joinsRemoved)++;
+				joinExpr->rtindex = 0; // JoinExpr.rtindex of 0 means no join
+
+				if (leftRte->rtekind == RTE_JOIN)
+				{
+					elog(
+							LOG, "Replacing JOIN of leftTable(RTE_JOIN)=%s and rightTable=%s with MatView table=%s",
+							rt_fetch(joinExpr->rtindex - 3, rootQuery->rtable)->eref->aliasname,
+							rightRte->eref->aliasname,
+							((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
+				}
+				else
+				{
+					// TODO: Remove this join
+					elog(
+							LOG, "Replacing JOIN of leftTable=%s and rightTable=%s with MatView table=%s",
+							leftRte->eref->aliasname,
+							rightRte->eref->aliasname,
+							((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
+				}
+//				removedRTEs = list_append_unique_int(removedRTEs,
+//														joinExpr->rtindex);
+//				removedRTEs = list_append_unique_int(removedRTEs,
+//														joinExpr->rtindex - 1);
+//				removedRTEs = list_append_unique_int(removedRTEs,
+//														joinExpr->rtindex - 2);
 			}
 			else if (containsLeftRte)
 			{
-				// TODO: replace left RTE with MatView RTE
-				elog(LOG, "Replacing leftTable=%s from Query.rtable with %s from MatView",
-					 leftRte->eref->aliasname,
-					 ((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
+				elog(
+						LOG, "Replacing leftTable=%s from Query.rtable with %s from MatView",
+						leftRte->eref->aliasname,
+						((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
 				CopyRte(leftRte, llast(rootQuery->rtable));
+				// TODO: Rewrite joinExpr->quals to reference MatView
 			}
 			else if (containsRightRte)
 			{
 				// TODO: replace right RTE with MatView RTE
-				elog(LOG, "Replacing rightTable=%s from Query.rtable with %s from MatView",
-					 rightRte->eref->aliasname,
-					 ((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
+				elog(
+						LOG, "Replacing rightTable=%s from Query.rtable with %s from MatView",
+						rightRte->eref->aliasname,
+						((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
 				CopyRte(rightRte, llast(rootQuery->rtable));
+				// TODO: Rewrite joinExpr->quals to reference MatView
 			}
 
 			// TODO: ensure quals are equal
@@ -2123,6 +1992,203 @@ void AddQueryStats(Query *query)
 	MemoryContextSwitchTo(oldContext);
 }
 
+void FreeMatView(MatView *matView)
+{
+	if (matView != NULL)
+	{
+		pfree(matView->baseQuery);
+		pfree(matView->name);
+		pfree(matView->selectQuery);
+		pfree(matView);
+	}
+}
+
+/**
+ * string MUST be null-terminated.
+ */
+void ReplaceChars(char *string, char target, char replacement, size_t sizeLimit)
+{
+	size_t index;
+
+	for (index = 0; index < sizeLimit && string[index] != '\0'; index++)
+	{
+		if (string[index] == target)
+		{
+			string[index] = replacement;
+		}
+	}
+}
+
+double GetPlanCost(Plan *plan)
+{
+	double cost;
+	ListCell *targetCell;
+	char *planTag;
+
+	cost = 0;
+
+	if (plan != NULL)
+	{
+//		elog(
+//				LOG, "Plan node type=%d, cost=%f, tuples=%f, tupleWidth=%d",
+//				nodeTag(plan), plan->total_cost, plan->plan_rows, plan->plan_width);
+		switch (nodeTag(plan))
+		{
+			case T_Result:
+//				elog(LOG, "Result plan node found");
+				planTag = "Result";
+				break;
+			case T_SeqScan: // 18
+				planTag = "SequenceScan";
+				break;
+			case T_Join:
+			case T_MergeJoin:
+			case T_HashJoin:
+				planTag = "Join";
+//				elog(LOG, "Join plan node found");
+				break;
+			case T_Hash:
+				planTag = "Hash";
+				break;
+			default:
+				planTag = "Unknown";
+		}
+
+//		AnalyzePlanQuals(plan->qual);
+
+		foreach(targetCell, plan->targetlist)
+		{
+			TargetEntry *targetEntry = lfirst_node(TargetEntry, targetCell);
+			// Skip junk entries and those with no table
+			if (targetEntry->resjunk
+							|| targetEntry->resorigtbl
+											== 0|| targetEntry->resname == NULL)
+			{
+				continue;
+			}
+		}
+
+		cost = plan->total_cost + GetPlanCost(plan->lefttree)
+						+ GetPlanCost(plan->righttree);
+	}
+
+	return cost;
+}
+
+void ResetVarno(Expr *expr, Index newVarno)
+{
+	switch (nodeTag(expr))
+	{
+		case T_Var:
+		{
+			Var *var = (Var *) expr;
+			var->varno = newVarno;
+//			elog(LOG, "Setting varno of Var to %d", newVarno);
+			break;
+		}
+		case T_Aggref:
+		{
+			Aggref *aggref = (Aggref *) expr;
+			ListCell *argCell;
+			TargetEntry *argTE;
+			elog(LOG, "Setting varno of Vars in Aggref to %d", newVarno);
+
+			foreach(argCell, aggref->args)
+			{
+				argTE = lfirst_node(TargetEntry, argCell);
+				ResetVarno(argTE->expr, newVarno);
+			}
+			break;
+		}
+		default:
+			elog(
+					WARNING, "Failed to create renamed TargetEntry due to unrecognized nodeTag");
+	}
+}
+
+void SetVarattno(Expr *expr, AttrNumber varattno)
+{
+	switch (nodeTag(expr))
+	{
+		case T_Var:
+		{
+			elog(LOG, "Setting varattno for Var to %d", varattno);
+			Var *var = (Var *) expr;
+			var->varattno = varattno;
+			break;
+		}
+		case T_Aggref:
+		{
+			Aggref *aggref = (Aggref *) expr;
+			ListCell *argCell;
+			TargetEntry *argTE;
+
+			elog(LOG, "Setting varattno for args in Aggref to %d", varattno);
+
+			foreach(argCell, aggref->args)
+			{
+				argTE = lfirst_node(TargetEntry, argCell);
+				SetVarattno(argTE->expr, varattno);
+			}
+			break;
+		}
+		default:
+			elog(WARNING, "Failed to set varattno for unrecognized node");
+	}
+}
+
+void SetVarno(Expr *expr, Index varno)
+{
+	switch (nodeTag(expr))
+	{
+		case T_Var:
+		{
+			elog(LOG, "Setting varno for Var to %d", varno);
+			Var *var = (Var *) expr;
+			var->varno = varno;
+			break;
+		}
+		case T_Aggref:
+		{
+			Aggref *aggref = (Aggref *) expr;
+			ListCell *argCell;
+			TargetEntry *argTE;
+
+			elog(LOG, "Setting varno for args in Aggref to %d", varno);
+
+			foreach(argCell, aggref->args)
+			{
+				argTE = lfirst_node(TargetEntry, argCell);
+				SetVarno(argTE->expr, varno);
+			}
+			break;
+		}
+		default:
+			elog(WARNING, "Failed to set varno for unrecognized node");
+	}
+}
+
+/**
+ * Find a particular RangeTblEntry by its Oid within a list of RTEs.
+ */
+RangeTblEntry *FindRte(Oid relid, List *rtable)
+{
+	ListCell *rteCell;
+	RangeTblEntry *rte;
+
+	foreach(rteCell, rtable)
+	{
+		rte = lfirst_node(RangeTblEntry, rteCell);
+
+		if (rte->relid == relid)
+		{
+			return rte;
+		}
+	}
+
+	return NULL;
+}
+
 void PrintQueryInfo(Query *query)
 {
 	ListCell *rte_cell;
@@ -2179,120 +2245,4 @@ void PrintQueryInfo(Query *query)
 	{
 		elog(LOG, "No RTEs found in select statement");
 	}
-}
-
-void InspectQuery(Query *query)
-{
-	MemoryContext oldContext;
-	Query *queryCopy;
-
-	CheckInitState();
-
-	oldContext = MemoryContextSwitchTo(AutoMatViewContext);
-
-	elog(LOG, "Copying query object");
-	queryCopy = copyObject(query);
-
-	if (queryCopy->commandType == CMD_SELECT)
-	{
-		elog(LOG, "Found select query in pg_plan_queries");
-		PrintQueryInfo(queryCopy);
-	}
-	else if (queryCopy->commandType == CMD_INSERT
-					|| queryCopy->commandType == CMD_UPDATE)
-	{
-		elog(LOG, "Insert or update found");
-	}
-
-	pfree(queryCopy);
-	MemoryContextSwitchTo(oldContext);
-}
-
-List *
-SearchApplicableMatViews(RangeVar *rangeVar)
-{
-// TODO: Figure out how we will search for applicable materialized views
-// to use to rewrite future queries
-	MemoryContext oldContext;
-
-	elog(LOG, "Searching for applicable materialized views given RangeVar...");
-
-	if (AutoMatViewContext != NULL)
-	{
-		elog(LOG, "SearcApplicableMatViews switching to AutoMatViewContext");
-		oldContext = MemoryContextSwitchTo(AutoMatViewContext);
-
-		elog(LOG, "SearchApplicableMatViews switching to old context");
-		MemoryContextSwitchTo(oldContext);
-	}
-	else
-	{
-		elog(
-				WARNING, "Attempt to search applicable MatViews before any were created");
-	}
-
-	return NULL;
-}
-
-// TODO: Creating materialized views: look into creatas.c's ExecCreateTableAs function
-// 		  Given
-
-void AddMatView(IntoClause *into)
-{
-	MemoryContext oldContext;
-	ListCell *cell;
-	ListCell *colCell;
-	IntoClause *matViewInto;
-	IntoClause *intoCopy;
-	char *colname;
-
-	CheckInitState();
-
-	oldContext = MemoryContextSwitchTo(AutoMatViewContext);
-
-	intoCopy = copyObject(into);
-	elog(LOG, "Appending materialized view %s to list of available matviews",
-	intoCopy->rel->relname);
-	matViewIntoClauses = list_append_unique(matViewIntoClauses, intoCopy);
-	elog(LOG, "Materialized views stored length=%d:",
-	matViewIntoClauses->length);
-
-	foreach(cell, matViewIntoClauses)
-	{
-		matViewInto = (IntoClause *) lfirst(cell);
-		elog(LOG, "MatView relname=%s", matViewInto->rel->relname);
-
-		if (matViewInto->tableSpaceName)
-		{
-			elog(
-			LOG, "Matview tablespace name: %s", matViewInto->tableSpaceName);
-		}
-
-		if (matViewInto->colNames)
-		{
-			elog(LOG, "Materialized view IntoClause column names length=%d:",
-			matViewInto->colNames->length);
-			foreach(colCell, matViewInto->colNames)
-			{
-				if (colCell)
-				{
-					if (lfirst(colCell))
-					{
-						colname = strVal(lfirst(colCell));
-						elog(LOG, "ColName: %s", colname);
-					}
-					else
-					{
-						elog(LOG, "NULL column name in cell");
-					}
-				}
-			}
-		}
-		else
-		{
-			elog(LOG, "Found no column names in matview");
-		}
-	}
-
-	MemoryContextSwitchTo(oldContext);
 }

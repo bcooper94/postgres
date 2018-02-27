@@ -15,16 +15,7 @@
 #include "nodes/primnodes.h"
 #include "nodes/plannodes.h"
 
-
-typedef struct MatView
-{
-	char *name;
-	char *selectQuery;
-	Query *baseQuery; // Query object which this MatView is based on
-	List *renamedTargetList; // List (of TargetEntry) with renamed TargetEntries
-	List *renamedRtable;
-} MatView;
-
+typedef struct MatView MatView;
 
 extern MemoryContext SwitchToAutoMatViewContext();
 
