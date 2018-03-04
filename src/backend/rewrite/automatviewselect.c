@@ -128,9 +128,14 @@ static char *VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
 // Query rewrite operations
 static void RewriteTargetList(Query *query, MatView *matView);
 static void RewriteJoinTree(Query *query, MatView *matView);
-void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
+static void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
     int fromClauseIndex, size_t fromClauseLength, int *joinCount,
     int *joinsRemoved);
+static void RewriteQuals(RangeTblEntry *varSourceRte, List *quals, Index targetVarno,
+    RangeTblEntry *matViewRte);
+static void RewriteVarReferences(RangeTblEntry *varSourceRte, Expr *target,
+    Index targetVarno, RangeTblEntry *matViewRte);
+static void RewriteGroupByClause(Query *query, MatView *matView);
 static void CopyRte(RangeTblEntry *destination, RangeTblEntry *copyTarget);
 static bool DoesMatViewContainRTE(RangeTblEntry *rte, MatView *matView);
 
@@ -146,7 +151,9 @@ static bool IsFromClauseMatch(Query *query, MatView *matView);
 static bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
     MatView *matView);
 static bool AreQualsMatch(MatView *matView, List *quals, List *queryRtable);
-static bool IsGroupByClauseMatch(Query *query, MatView *matView);
+static bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
+    List *queryRtable, List *matViewGroupClause, List *matViewTargetList,
+    List *matViewRtable, MatView *matView);
 static bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
     List *rtableTwo);
 
@@ -724,11 +731,11 @@ char *UnparseGroupClause(List *groupClause, List *targetList, List *rtable)
                 groupStmt->tleSortGroupRef);
             TargetEntryToString(targetEntry, rtable, false, targetBuffer,
             TARGET_BUFFER_SIZE);
-            elog(
-                LOG, "Found SortGroupClause nodeTag=%d, sortGroupRef=%d, eqop=%d, sortop=%d, targetEntry=%s",
-                nodeTag(groupStmt), groupStmt->tleSortGroupRef,
-                groupStmt->eqop, groupStmt->sortop,
-                targetBuffer);
+//            elog(
+//                LOG, "Found SortGroupClause nodeTag=%d, sortGroupRef=%d, eqop=%d, sortop=%d, targetEntry=%s",
+//                nodeTag(groupStmt), groupStmt->tleSortGroupRef,
+//                groupStmt->eqop, groupStmt->sortop,
+//                targetBuffer);
 
             strncat(groupClauseStr, targetBuffer, TARGET_BUFFER_SIZE);
 
@@ -1267,12 +1274,13 @@ char *RewriteQuery(Query *query, MatView *matView)
 
     if (matView != NULL)
     {
-//		RewriteTargetList(queryCopy, matView);
-//		RewriteJoinTree(queryCopy, matView);
+		RewriteTargetList(queryCopy, matView);
+		RewriteJoinTree(queryCopy, matView);
+		RewriteGroupByClause(queryCopy, matView);
 
-//		MatView *createdView = UnparseQuery(queryCopy);
-//		rewrittenQuery = pstrdup(createdView->selectQuery);
-//		FreeMatView(createdView);
+		MatView *createdView = UnparseQuery(queryCopy);
+		rewrittenQuery = pstrdup(createdView->selectQuery);
+		FreeMatView(createdView);
     }
     else
     {
@@ -1644,6 +1652,12 @@ void RewriteVarReferences(RangeTblEntry *varSourceRte, Expr *target,
     }
 }
 
+void RewriteGroupByClause(Query *query, MatView *matView)
+{
+    // TODO: Remove Query's GROUP BY clause
+    elog(LOG, "RewriteGroupByClause called...");
+}
+
 void CopyRte(RangeTblEntry *destination, RangeTblEntry *copyTarget)
 {
     if (destination != NULL && copyTarget != NULL)
@@ -1879,7 +1893,10 @@ bool DoesQueryMatchMatView(Query *query, MatView *matView)
     // TODO: validate matching conditions and (maybe) joins
     isMatch = IsTargetListMatch(query->rtable, query->targetList, matView)
         && IsFromClauseMatch(query, matView)
-        && IsGroupByClauseMatch(query, matView);
+        && IsGroupByClauseMatch(query->groupClause, query->targetList,
+            query->rtable, matView->baseQuery->groupClause,
+            matView->baseQuery->targetList, matView->baseQuery->rtable,
+            matView);
 
     return isMatch;
 }
@@ -1931,7 +1948,7 @@ bool IsTargetListMatch(List *rtable, List *targetList, MatView *matView)
          *  TargetEntry is present in the MatView's targetList.
          */
         elog(
-            LOG, "IsTargetListMatch: Finding RTE and checking if Expr is match...");
+        LOG, "IsTargetListMatch: Finding RTE and checking if Expr is match...");
         isMatch = FindRte(targetEntry->resorigtbl, matView->baseQuery->rtable)
             == NULL || IsExprMatch(targetEntry->expr, rtable, matView);
     }
@@ -1994,8 +2011,8 @@ bool IsExprRTEInMatView(Expr *expr, List *queryRtable, MatView *matView)
             isInMatView = FindRte(varRte->relid,
                 matView->baseQuery->rtable) != NULL;
             elog(LOG, "IsExprRTEInMatView: Found Var=%s.%s. RTE in MatView? %s",
-                varRte->eref->aliasname, get_colname(varRte, var),
-                isInMatView ? "true" : "false");
+            varRte->eref->aliasname, get_colname(varRte, var),
+            isInMatView ? "true" : "false");
             break;
         }
         case T_Aggref:
@@ -2081,7 +2098,8 @@ bool IsFromClauseMatch(Query *query, MatView *matView)
 
     if (isMatch)
     {
-        elog(LOG, "IsFromClauseMatch: found match for MatView=%s", matView->selectQuery);
+        elog(
+            LOG, "IsFromClauseMatch: found match for MatView=%s", matView->selectQuery);
     }
 
     return isMatch;
@@ -2137,13 +2155,15 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
             // NOTE: Un-parsing of mixed JOIN ON clauses with table cross products will fail
             if (!IsA(joinExpr->larg, RangeTblRef))
             {
-                isMatch = isMatch && IsFromClauseMatchRecurs(rootQuery, joinExpr->larg,
-                    matView);
+                isMatch = isMatch
+                    && IsFromClauseMatchRecurs(rootQuery, joinExpr->larg,
+                        matView);
             }
             if (!IsA(joinExpr->rarg, RangeTblRef))
             {
-                isMatch = isMatch && IsFromClauseMatchRecurs(rootQuery, joinExpr->rarg,
-                    matView);
+                isMatch = isMatch
+                    && IsFromClauseMatchRecurs(rootQuery, joinExpr->rarg,
+                        matView);
             }
 
             if (joinExpr->rtindex != 0)
@@ -2151,8 +2171,9 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
                 joinRte = rt_fetch(joinExpr->rtindex, rootQuery->rtable);
                 leftRte = left_join_table(joinExpr, rootQuery->rtable);
                 rightRte = right_join_table(joinExpr, rootQuery->rtable);
-                isMatch = isMatch && AreQualsMatch(matView, joinExpr->quals,
-                    rootQuery->rtable);
+                isMatch = isMatch
+                    && AreQualsMatch(matView, joinExpr->quals,
+                        rootQuery->rtable);
                 if (isMatch)
                 {
                     elog(
@@ -2245,10 +2266,48 @@ bool AreQualsMatch(MatView *matView, List *quals, List *queryRtable)
     return isMatch;
 }
 
-bool IsGroupByClauseMatch(Query *query, MatView *matView)
+bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
+    List *queryRtable, List *matViewGroupClause, List *matViewTargetList,
+    List *matViewRtable, MatView *matView)
 {
+    ListCell *queryGroupCell, *matViewGroupCell;
+    SortGroupClause *queryGroupStmt, *matViewGroupStmt;
+    TargetEntry *queryTargetEntry, *matViewTargetEntry;
+    bool isMatch = list_length(queryGroupClause)
+        == list_length(matViewGroupClause);
+
     elog(LOG, "IsGroupByClauseMatch called...");
-    return false;
+
+    if (isMatch && list_length(queryGroupClause) > 0)
+    {
+        for (queryGroupCell = list_head(queryGroupClause), matViewGroupCell =
+            list_head(matViewGroupClause);
+            queryGroupCell != NULL && matViewGroupCell != NULL && isMatch;
+            queryGroupCell = queryGroupCell->next, matViewGroupCell =
+                matViewGroupCell->next)
+        {
+            queryGroupStmt = lfirst_node(SortGroupClause, queryGroupCell);
+            queryTargetEntry = (TargetEntry *) list_nth(queryTargetList,
+                queryGroupStmt->tleSortGroupRef);
+            matViewGroupStmt = lfirst_node(SortGroupClause, matViewGroupCell);
+            matViewTargetEntry = (TargetEntry *) list_nth(matViewTargetList,
+                matViewGroupStmt->tleSortGroupRef);
+            isMatch = AreExprsEqual(queryTargetEntry->expr, queryRtable,
+                matViewTargetEntry->expr, matViewRtable);
+        }
+    }
+    else if (isMatch)
+    {
+        elog(LOG, "IsGroupByClauseMatch: no group clauses "
+        "found in either Query or MatView. Considering match");
+    }
+
+    if (isMatch)
+    {
+        elog(LOG, "Group clause matches MatView=%s", matView->selectQuery);
+    }
+
+    return isMatch;
 }
 
 bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
