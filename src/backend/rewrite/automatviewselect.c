@@ -8,6 +8,7 @@
 #include "postgres.h"
 
 #include "c.h"
+#include "catalog/pg_type.h"
 #include "utils/memutils.h"
 #include "nodes/value.h"
 #include "nodes/pg_list.h"
@@ -101,7 +102,7 @@ static TableQueryStats *FindTableQueryStats(char *tableName);
 static void PrintTableQueryStats(TableQueryStats *stats);
 
 // Un-parsing operations
-static MatView *UnparseQuery(Query *query);
+static MatView *UnparseQuery(Query *query, bool includeWhereClause);
 static List *UnparseTargetList(List *targetList, List *rtable,
     bool renameTargets, char *selectTargetsBuf, size_t selectTargetsBufSize);
 static TargetEntry *CreateRenamedTargetEntry(TargetEntry *baseTE, char *newName,
@@ -114,25 +115,25 @@ static char *UnparseGroupClause(List *groupClause, List *targetList,
     List *rtable);
 static void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
     List *rangeTables, char *varStrBuf, size_t varStrBufSize);
-static char *UnparseQuals(List *quals, RangeTblEntry *leftRte,
-    RangeTblEntry *rightRte, JoinExpr *joinExpr, List *rangeTables);
+static char *UnparseQuals(List *quals, List *rangeTables);
 static char *AggrefToString(TargetEntry *aggrefEntry, List *rtable,
     bool renameAggref, char *aggrefStrBuf, size_t aggrefStrBufSize);
 static void ExprToString(Expr *expr, List *rangeTables, char *targetBuf,
     size_t targetBufSize);
 static char *TargetEntryToString(TargetEntry *targetEntry, List *rtable,
     bool renameTargets, char *outBuf, size_t outBufSize);
+static void ConstToString(Const *constant, char *outputBuf, Size outputBufSize);
 static char *VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
     size_t varBufSize);
 
 // Query rewrite operations
 static void RewriteTargetList(Query *query, MatView *matView);
 static void RewriteJoinTree(Query *query, MatView *matView);
-static void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
-    int fromClauseIndex, size_t fromClauseLength, int *joinCount,
+static void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView,
+    Node *node, int fromClauseIndex, size_t fromClauseLength, int *joinCount,
     int *joinsRemoved);
-static void RewriteQuals(RangeTblEntry *varSourceRte, List *quals, Index targetVarno,
-    RangeTblEntry *matViewRte);
+static void RewriteQuals(RangeTblEntry *varSourceRte, List *quals,
+    Index targetVarno, RangeTblEntry *matViewRte);
 static void RewriteVarReferences(RangeTblEntry *varSourceRte, Expr *target,
     Index targetVarno, RangeTblEntry *matViewRte);
 static void RewriteGroupByClause(Query *query, MatView *matView);
@@ -372,13 +373,14 @@ void PrintTableQueryStats(TableQueryStats *stats)
         stats->tableName, stats->selectCounts, stats->updateCounts, stats->deleteCounts);
 }
 
-MatView *UnparseQuery(Query *query)
+MatView *UnparseQuery(Query *query, bool includeWhereClause)
 {
     ListCell *listCell;
     TargetEntry *targetEntry;
     FromExpr *from;
     MatView *matView;
     char *fromClauseStr, *groupClauseStr;
+    char *whereClauseStr = NULL;
     char targetListBuf[QUERY_BUFFER_SIZE];
     List *renamedTargets;
 
@@ -402,7 +404,6 @@ MatView *UnparseQuery(Query *query)
     {
         int index = 0;
         from = query->jointree;
-//		AnalyzePlanQuals(query->jointree->quals);
         elog(
             LOG, "Unparsing FROM clause. fromlist.length=%d", from->fromlist->length);
 
@@ -414,6 +415,14 @@ MatView *UnparseQuery(Query *query)
                 QUERY_BUFFER_SIZE);
             index++;
         }
+
+        if (includeWhereClause)
+        {
+            whereClauseStr = UnparseQuals(from->quals, query->rtable);
+            elog(
+                LOG, "UnparseQuery: unparsing WHERE clause. query.jointree.quals=%s",
+                whereClauseStr);
+        }
     }
     else
     {
@@ -421,6 +430,12 @@ MatView *UnparseQuery(Query *query)
         fromClauseStr = UnparseRangeTableEntries(query->rtable);
         strncat(matView->selectQuery, fromClauseStr, QUERY_BUFFER_SIZE);
         pfree(fromClauseStr);
+    }
+    if (whereClauseStr != NULL)
+    {
+        strncat(matView->selectQuery, " WHERE ", QUERY_BUFFER_SIZE);
+        strncat(matView->selectQuery, whereClauseStr, QUERY_BUFFER_SIZE);
+        pfree(whereClauseStr);
     }
     if (query->groupClause != NIL)
     {
@@ -638,8 +653,7 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
                 rightRte = right_join_table(joinExpr, rootQuery->rtable);
                 elog(LOG, "Unparsed %s %s %s", leftRte->eref->aliasname,
                 joinTag, rightRte->eref->aliasname);
-                qualStr = UnparseQuals(joinExpr->quals, leftRte, rightRte,
-                    joinExpr, rootQuery->rtable);
+                qualStr = UnparseQuals(joinExpr->quals, rootQuery->rtable);
                 elog(LOG, "Unparsed qualifiers for %s %s %s",
                 leftRte->eref->aliasname,
                 joinTag, rightRte->eref->aliasname);
@@ -668,7 +682,6 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
         }
         else if (IsA(node, RangeTblRef))
         {
-            elog(LOG, "UnparseFromExprRecurs: found RangeTblRef in jointree");
             RangeTblRef *rtRef = (RangeTblRef *) node;
             elog(
                 LOG, "UnparseFromExprRecurs: RangeTblRef.rtindex=%d", rtRef->rtindex);
@@ -676,18 +689,15 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
 
             if (fromClauseIndex < fromClauseLength - 1)
             {
-//				elog(LOG, "UnparseFromExpr: no next entry for fromExprCell");
                 snprintf(joinBuf, QUERY_BUFFER_SIZE, "%s, ",
                     rte->eref->aliasname);
             }
             else
             {
                 strncpy(joinBuf, rte->eref->aliasname, QUERY_BUFFER_SIZE);
-//				elog(LOG, "UnparseFromExpr: copied table name to joinBUf");
             }
 
             strcat(selectQuery, joinBuf);
-//			elog(LOG, "UnparseFromExpr: concatenated joinBuf to selectQuery");
         }
         else if (IsA(node, RangeTblEntry))
         {
@@ -760,37 +770,34 @@ char *UnparseGroupClause(List *groupClause, List *targetList, List *rtable)
 void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
     List *rangeTables, char *varStrBuf, size_t varStrBufSize)
 {
-    RangeTblEntry *targetRte;
-
-    targetRte = rte;
+    RangeTblEntry *targetRte = rte;
 
     // Special case for Join RTEs since their aliasname is "unnamed_join"
     if (rte->rtekind == RTE_JOIN)
     {
         RangeTblEntry *varRte = rt_fetch(var->varno, rangeTables);
-        elog(LOG, "Var from table=%s: %s", varRte->eref->aliasname,
-        get_colname(varRte, var));
-        // TODO: Ensure leftRte index is correct.
-//		 If rte is an RTE_JOIN, left should be the right table of last join
+//        elog(LOG, "Var from table=%s: %s", varRte->eref->aliasname,
+//        get_colname(varRte, var));
+
+        // If rte is an RTE_JOIN, left should be the right table of last join
         RangeTblEntry *leftRte = rt_fetch(joinExpr->rtindex - 3, rangeTables);
         RangeTblEntry *rightRte = right_join_table(joinExpr, rangeTables);
 //		elog(LOG, "CreateJoinVarStr found JOIN RTE: rtindex=%d, name=%s, left.name=%s, right.name=%s",
 //						joinExpr->rtindex, rte->eref->aliasname,
 //						leftRte->eref->aliasname, rightRte->eref->aliasname);
 
-// Var was from left RTE
-// TODO: ensure this logic is correct
+        // Var was from left RTE
         if (var->varattno <= leftRte->eref->colnames->length)
         {
-            elog(
-                LOG, "Renaming tableName in Join RTE to left table: %s", leftRte->eref->aliasname);
+//            elog(
+//                LOG, "Renaming tableName in Join RTE to left table: %s", leftRte->eref->aliasname);
             targetRte = leftRte;
         }
         // Var from right RTE
         else
         {
-            elog(
-                LOG, "Renaming tableName in Join RTE to right table: %s", rightRte->eref->aliasname);
+//            elog(
+//                LOG, "Renaming tableName in Join RTE to right table: %s", rightRte->eref->aliasname);
             targetRte = rightRte;
         }
     }
@@ -798,46 +805,42 @@ void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
     sprintf(varStrBuf, "%s.%s", targetRte->eref->aliasname,
         get_colname(targetRte, var));
 
-    elog(LOG, "Var str for rtekind=%d, varattno=%d %s",
-    rte->rtekind, var->varattno, varStrBuf);
+//    elog(LOG, "Var str for rtekind=%d, varattno=%d %s",
+//    rte->rtekind, var->varattno, varStrBuf);
 
     if (var->varno == INDEX_VAR)
     {
         elog(LOG, "Var is an index var");
     }
-
 }
 
 /**
  * Returns a string representation of the qualifiers.
  * NOTE: returned char * must be pfreed.
  */
-char *UnparseQuals(List *quals, RangeTblEntry *leftRte, RangeTblEntry *rightRte,
-    JoinExpr *joinExpr, List *rangeTables)
+char *UnparseQuals(List *quals, List *rangeTables)
 {
     ListCell *qualCell;
     Expr *expr;
-    size_t qualBufSize = 512;
+    size_t qualBufSize = TARGET_BUFFER_SIZE;
     char *qualBuf;
 
-    elog(LOG, "Unparsing quals for leftRte=%s rightRte=%s",
-    leftRte->eref->aliasname, rightRte->eref->aliasname);
+    elog(LOG, "UnparseQuals called...");
     qualBuf = palloc(sizeof(char) * qualBufSize);
-    memset(qualBuf, 0, qualBufSize);
 
-    if (quals != NIL)
+    if (qualBuf == NULL)
     {
+        elog(ERROR, "UnparseQuals: failed to allocate output buffer");
+    }
+    else if (quals != NIL)
+    {
+        memset(qualBuf, 0, qualBufSize);
         foreach(qualCell, quals)
         {
             expr = (Expr *) lfirst(qualCell);
-            elog(LOG, "UnparseQuals: retrieved expr from quals list...");
             if (qualBuf != NULL)
             {
                 ExprToString(expr, rangeTables, qualBuf, qualBufSize);
-            }
-            else
-            {
-                elog(ERROR, "Couldn't parse Quals due to null output buffer");
             }
         }
     }
@@ -900,10 +903,13 @@ char *AggrefToString(TargetEntry *aggrefEntry, List *rtable, bool renameAggref,
 void ExprToString(Expr *expr, List *rangeTables, char *targetBuf,
     size_t targetBufSize)
 {
-//	elog(LOG, "ExprToString Expr tag: %d", nodeTag(expr));
+    elog(LOG, "ExprToString Expr tag: %d", nodeTag(expr));
 
     switch (nodeTag(expr))
     {
+        case T_Const:
+            ConstToString((Const *) expr, targetBuf, targetBufSize);
+            break;
         case T_Var:
         {
             Var *var = (Var *) expr;
@@ -1053,6 +1059,42 @@ char *VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
     return returnedVarName;
 }
 
+void ConstToString(Const *constant, char *outputBuf, Size outputBufSize)
+{
+    elog(
+        LOG, "ConstToString: consttype=%d byvalue=%s", constant->consttype,
+        constant->constbyval ? "true" : "false");
+
+    if (constant->constisnull)
+    {
+        strncpy(outputBuf, "null", outputBufSize);
+    }
+    else
+    {
+        switch (constant->consttype)
+        {
+            case INT4OID:
+                snprintf(outputBuf, outputBufSize, "%d",
+                    DatumGetInt32(constant->constvalue));
+                break;
+            case INT8OID:
+                snprintf(outputBuf, outputBufSize, "%ll",
+                    DatumGetInt64(constant->constvalue));
+                break;
+            case BITOID:
+            case NUMERICOID:
+            case TEXTOID:
+            case UNKNOWNOID:
+                // TODO: figure out how to get string Consts
+                strncpy(outputBuf, DatumGetCString(constant->constvalue),
+                    outputBufSize);
+                break;
+            default:
+                elog(ERROR, "ConstToString failed to parse Const");
+        }
+    }
+}
+
 void AddQuery(Query *query, PlannedStmt *plannedStatement)
 {
     MemoryContext oldContext;
@@ -1062,10 +1104,12 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
     oldContext = MemoryContextSwitchTo(AutoMatViewContext);
     queryPlanStatsList = lappend(queryPlanStatsList,
         CreateQueryPlanStats(query, plannedStatement));
-    MatView *mView = UnparseQuery(query);
+// TODO: Remove when done testing UnparseQuery
+    MatView *mView = UnparseQuery(query, true);
     elog(LOG, "Unparsed Query: %s", mView->selectQuery);
+    FreeMatView(mView);
 
-    // TODO: Set training threshold from postgres properties file
+// TODO: Set training threshold from postgres properties file
     if (queryPlanStatsList->length > trainingSampleCount)
     {
         isCollectingQueries = false;
@@ -1117,7 +1161,8 @@ void CreateRelevantMatViews()
     foreach(queryCell, matViewQueries)
     {
         query = lfirst_node(Query, queryCell);
-        newMatView = UnparseQuery(query);
+        // We don't want the WHERE clause included in created materialized views
+        newMatView = UnparseQuery(query, false);
         PopulateMatViewRenamedRTable(newMatView);
         CreateMaterializedView(newMatView->name, newMatView->selectQuery);
         createdMatViews = list_append_unique(createdMatViews, newMatView);
@@ -1200,7 +1245,6 @@ List *GetCostlyQueries(double costCutoffRatio)
         {
             stats = (QueryPlanStats *) list_nth(queryPlanStatsList, index);
             costliestQueryPlans = lappend(costliestQueryPlans, stats);
-            MatView *view = UnparseQuery(stats->query);
         }
     }
 
@@ -1233,7 +1277,7 @@ List *GenerateInterestingQueries(List *queryPlanStats)
 
     interestingQueries = NIL;
 
-    // TODO: generate only interesting MatViews
+// TODO: generate only interesting MatViews
     foreach(queryStatsCell, queryPlanStats)
     {
         stats = (QueryPlanStats *) lfirst(queryStatsCell);
@@ -1251,8 +1295,8 @@ List *GenerateInterestingQueries(List *queryPlanStats)
  */
 List *PruneQueries(List *queries)
 {
-    // TODO: actually prune queries
-    // TODO: remove duplicates
+// TODO: actually prune queries
+// TODO: remove duplicates
     return queries;
 }
 
@@ -1274,13 +1318,13 @@ char *RewriteQuery(Query *query, MatView *matView)
 
     if (matView != NULL)
     {
-		RewriteTargetList(queryCopy, matView);
-		RewriteJoinTree(queryCopy, matView);
-		RewriteGroupByClause(queryCopy, matView);
+        RewriteTargetList(queryCopy, matView);
+        RewriteJoinTree(queryCopy, matView);
+        RewriteGroupByClause(queryCopy, matView);
 
-		MatView *createdView = UnparseQuery(queryCopy);
-		rewrittenQuery = pstrdup(createdView->selectQuery);
-		FreeMatView(createdView);
+        MatView *createdView = UnparseQuery(queryCopy, true);
+        rewrittenQuery = pstrdup(createdView->selectQuery);
+        FreeMatView(createdView);
     }
     else
     {
@@ -1652,10 +1696,22 @@ void RewriteVarReferences(RangeTblEntry *varSourceRte, Expr *target,
     }
 }
 
+/**
+ * Assuming query has been matched with matView, removes query's
+ *  GROUP BY clause if it has one.
+ */
 void RewriteGroupByClause(Query *query, MatView *matView)
 {
-    // TODO: Remove Query's GROUP BY clause
-    elog(LOG, "RewriteGroupByClause called...");
+    /*
+     * If query.groupClause is not NIL, then it has been matched to
+     *  matView.baseQuery.groupClause, i.e. both GROUP clauses are the same,
+     *  so we can remove query's GROUP clause.
+     */
+    if (query->groupClause != NIL && matView->baseQuery != NIL)
+    {
+        elog(LOG, "RewriteGroupByClause: removing Query's GROUP clause");
+        query->groupClause = NIL;
+    }
 }
 
 void CopyRte(RangeTblEntry *destination, RangeTblEntry *copyTarget)
@@ -1843,7 +1899,7 @@ MatView *GetBestMatViewMatch(Query *query)
 
     matchingMatViews = GetMatchingMatViews(query);
     bestMatch = NULL;
-    // TODO: filter returned MatViews to find best match
+// TODO: filter returned MatViews to find best match
 
     if (matchingMatViews != NIL && matchingMatViews->length > 0)
     {
@@ -1890,7 +1946,7 @@ bool DoesQueryMatchMatView(Query *query, MatView *matView)
 {
     bool isMatch;
 
-    // TODO: validate matching conditions and (maybe) joins
+// TODO: validate matching conditions and (maybe) joins
     isMatch = IsTargetListMatch(query->rtable, query->targetList, matView)
         && IsFromClauseMatch(query, matView)
         && IsGroupByClauseMatch(query->groupClause, query->targetList,
@@ -1974,7 +2030,7 @@ bool IsTargetEntryMatch(TargetEntry *targetEntry, List *queryRtable,
     TargetEntry *viewTargetEntry;
     bool isTargetEntryMatch;
 
-    // If targetEntry's table isn't in the MatView, we can join the table on query rewrite
+// If targetEntry's table isn't in the MatView, we can join the table on query rewrite
     isTargetEntryMatch = FindRte(targetEntry->resorigtbl,
         matView->baseQuery->rtable) == NULL;
     if (isTargetEntryMatch)
