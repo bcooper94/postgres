@@ -9,69 +9,48 @@
 
 #include "rewrite/automatviewselect_utils.h"
 
-//static bool IsTargetListMatch(List *rtable, List *targetList, MatView *matView);
 static bool IsTargetListMatch(List *rtable, List *targetList,
     List *matViewTargetList, List *matViewRtable);
 
-//static bool IsExprRTEInMatView(Expr *expr, List *queryRtable, MatView *matView);
 static bool IsExprRTEInMatView(Expr *expr, List *queryRtable,
     List *matViewRtable);
 
-//static bool IsExprMatch(Expr *expr, List *queryRtable, MatView *matView);
 static bool IsExprMatch(Expr *expr, List *queryRtable, List *matViewTargetList,
     List *matViewRtable);
 
-//static bool IsFromClauseMatch(Query *query, MatView *matView);
 static bool IsFromClauseMatch(Query *query, List *matViewTargetList,
     List *matViewRtable, FromExpr *matViewJoinTree);
 
-//static bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
-//    MatView *matView);
 static bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
     List *matViewTargetList, List *matViewRtable);
 
-//static bool AreQualsMatch(MatView *matView, List *quals, List *queryRtable);
 static bool AreQualsMatch(List *matViewTargetList, List *matViewRtable,
     List *quals, List *queryRtable);
 
-//static bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
-//    List *queryRtable, List *matViewGroupClause, List *matViewTargetList,
-//    List *matViewRtable, MatView *matView);
 static bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
     List *queryRtable, List *matViewGroupClause, List *matViewTargetList,
     List *matViewRtable);
 
-//static bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
-//    List *rtableTwo);
-
-//bool DoesQueryMatchMatView(Query *query, MatView *matView)
 bool DoesQueryMatchMatView(Query *query, Query *matViewQuery)
 {
-    bool isMatch;
-
-// TODO: validate matching conditions and (maybe) joins
-    isMatch = IsTargetListMatch(query->rtable, query->targetList,
+    return IsTargetListMatch(query->rtable, query->targetList,
         matViewQuery->targetList, matViewQuery->rtable)
         && IsFromClauseMatch(query, matViewQuery->targetList,
             matViewQuery->rtable, matViewQuery->jointree)
         && IsGroupByClauseMatch(query->groupClause, query->targetList,
             query->rtable, matViewQuery->groupClause, matViewQuery->targetList,
             matViewQuery->rtable);
-
-    return isMatch;
 }
 
 /**
  * Determines whether or not the provided List (of TargetEntry) matches the given MatView.
  */
-//bool IsTargetListMatch(List *rtable, List *targetList, MatView *matView)
 bool IsTargetListMatch(List *rtable, List *targetList, List *matViewTargetList,
     List *matViewRtable)
 {
     bool isMatch;
-    ListCell *targetEntryCell, *viewTargetEntryCell;
-    TargetEntry *targetEntry, *viewTargetEntry;
-    RangeTblEntry *queryRte, *matViewRte;
+    ListCell *targetEntryCell;
+    TargetEntry *targetEntry;
 
     isMatch = true;
 
@@ -99,7 +78,6 @@ bool IsTargetListMatch(List *rtable, List *targetList, List *matViewTargetList,
     return isMatch;
 }
 
-//bool IsExprRTEInMatView(Expr *expr, List *queryRtable, MatView *matView)
 bool IsExprRTEInMatView(Expr *expr, List *queryRtable, List *matViewRtable)
 {
     bool isInMatView = true;
@@ -150,7 +128,6 @@ bool IsExprRTEInMatView(Expr *expr, List *queryRtable, List *matViewRtable)
 /**
  * Determine if the given Expr is in the MatView's targetList.
  */
-//bool IsExprMatch(Expr *expr, List *queryRtable, MatView *matView)
 bool IsExprMatch(Expr *expr, List *queryRtable, List *matViewTargetList,
     List *matViewRtable)
 {
@@ -176,7 +153,6 @@ bool IsExprMatch(Expr *expr, List *queryRtable, List *matViewTargetList,
 /**
  * Ensure the MatView's FROM clause is a match for the Query's FROM clause.
  */
-//bool IsFromClauseMatch(Query *query, MatView *matView)
 bool IsFromClauseMatch(Query *query, List *matViewTargetList,
     List *matViewRtable, FromExpr *matViewJoinTree)
 {
@@ -218,8 +194,6 @@ bool IsFromClauseMatch(Query *query, List *matViewTargetList,
     return isMatch;
 }
 
-//bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
-//    MatView *matView)
 bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
     List *matViewTargetList, List *matViewRtable)
 {
@@ -330,7 +304,6 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
     return isMatch;
 }
 
-//bool AreQualsMatch(MatView *matView, List *quals, List *queryRtable)
 bool AreQualsMatch(List *matViewTargetList, List *matViewRtable, List *quals,
     List *queryRtable)
 {

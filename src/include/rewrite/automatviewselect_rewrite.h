@@ -1,6 +1,9 @@
 /*
  * automatviewselect_rewrite.h
  *
+ * NOTE: All functions defined here assume the current
+ *  MemoryContext is the AutoMatViewContext.
+ *
  *  Created on: Mar 9, 2018
  *      Author: brandon
  */
