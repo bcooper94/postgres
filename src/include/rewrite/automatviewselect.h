@@ -10,12 +10,12 @@
 
 #include "postgres.h"
 
+#include "rewrite/automatviewselect_utils.h"
+
 #include "nodes/pg_list.h"
 #include "nodes/parsenodes.h"
 #include "nodes/primnodes.h"
 #include "nodes/plannodes.h"
-
-typedef struct MatView MatView;
 
 extern MemoryContext SwitchToAutoMatViewContext();
 
@@ -32,7 +32,5 @@ extern List *SearchApplicableMatViews(RangeVar *rangeVar);
 extern void AddMatView(IntoClause *into);
 
 extern MatView *GetBestMatViewMatch(Query *query);
-
-extern char *RewriteQuery(Query *query, MatView *matView);
 
 #endif
