@@ -2,7 +2,7 @@
  * automatviewselect module for matching incoming queries to existing MatViews.
  *
  *  Created on: Mar 9, 2018
- *      Author: brandon
+ *      Author: Brandon Cooper
  */
 
 #include "rewrite/automatviewselect_match.h"
@@ -31,6 +31,15 @@ static bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
     List *queryRtable, List *matViewGroupClause, List *matViewTargetList,
     List *matViewRtable);
 
+/**
+ * Determine if the given query can be rewritten to use the given materialized view.
+ *
+ * query: target Query to match to the materialized view
+ * matViewQuery: Query object for the materialized view to match query to.
+ *
+ * return: true if query can be rewritten to use the materialized view
+ *  to which matViewQuery belongs.
+ */
 bool DoesQueryMatchMatView(Query *query, Query *matViewQuery)
 {
     return IsTargetListMatch(query->rtable, query->targetList,
@@ -40,6 +49,29 @@ bool DoesQueryMatchMatView(Query *query, Query *matViewQuery)
         && IsGroupByClauseMatch(query->groupClause, query->targetList,
             query->rtable, matViewQuery->groupClause, matViewQuery->targetList,
             matViewQuery->rtable);
+}
+
+/**
+ * Determine whether or not a Query should be rewritten to use any materialized views,
+ *  or if it should be used to create a new materialized view. e.g. if there are no joins,
+ *  group by clauses or aggregation functions, we will not improve performance of
+ *  the query's execution.
+ */
+bool CanQueryBeOptimized(Query *query)
+{
+    ListCell *joinCell;
+    bool hasJoins = false;
+
+    if (query->jointree != NULL && list_length(query->jointree->fromlist) > 0)
+    {
+        for (joinCell = list_head(query->jointree->fromlist);
+            joinCell != NULL && !hasJoins; joinCell = joinCell->next)
+        {
+            hasJoins = IsA(lfirst(joinCell), JoinExpr);
+        }
+    }
+
+    return query->hasAggs || query->groupClause != NIL || hasJoins;
 }
 
 /**

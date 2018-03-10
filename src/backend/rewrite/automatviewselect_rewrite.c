@@ -2,7 +2,7 @@
  * automatviewselect_rewrite.c
  *
  *  Created on: Mar 9, 2018
- *      Author: brandon
+ *      Author: Brandon Cooper
  */
 
 #include "rewrite/automatviewselect_rewrite.h"
@@ -12,26 +12,26 @@
 #include "parser/parsetree.h"
 #include "nodes/nodes.h"
 
-#define QUERY_BUFFER_SIZE 1024
-
 /**
  * Rewrite the given Query to use the given materialized view.
+ *
+ * NOTE: query will be modified.
+ *
  * returns: SQL query string representing rewritten Query object.
  */
 char *RewriteQuery(Query *query, MatView *matView)
 {
     char *rewrittenQuery;
-    Query *queryCopy = copyObject(query);
 
     elog(LOG, "RewriteQuery called...");
 
     if (matView != NULL)
     {
-        RewriteTargetList(queryCopy, matView);
-        RewriteJoinTree(queryCopy, matView);
-        RewriteGroupByClause(queryCopy, matView);
+        RewriteTargetList(query, matView);
+        RewriteJoinTree(query, matView);
+        RewriteGroupByClause(query, matView);
 
-        MatView *createdView = UnparseQuery(queryCopy, true);
+        MatView *createdView = UnparseQuery(query, true);
         rewrittenQuery = pstrdup(createdView->selectQuery);
         FreeMatView(createdView);
     }
@@ -371,7 +371,7 @@ void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
             Var *var = (Var *) target;
             AttrNumber targetEntryIndex = 1;
 
-            elog(LOG, "RewriteVarReferences: found Var...");
+//            elog(LOG, "RewriteVarReferences: found Var...");
             RangeTblEntry *matViewRte = rt_fetch(var->varno,
                 queryRtable);
 
@@ -383,52 +383,17 @@ void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
                     matViewRtable))
                 {
                     elog(
-                        LOG, "RewriteVarReferences: rewrote var=%s to reference MatView at varno=%d",
-                        get_colname(rt_fetch(var->varno, queryRtable), var), targetVarno);
+                        LOG, "RewriteVarReferences: rewrote var=%s to reference MatView at varno=%d, varattno=%d",
+                        get_colname(rt_fetch(var->varno, queryRtable), var), targetVarno, targetEntryIndex);
                     SetVarattno(var, targetEntryIndex);
                     SetVarno(var, targetVarno);
                     elog(LOG, "RewriteVarReferences: rewritten var=%s.%s",
                     matViewRte->eref->aliasname, get_colname(matViewRte, var));
                 }
-                targetEntryIndex = 1;
+                targetEntryIndex++;
             }
             break;
         }
-//        case T_Var:
-//        {
-//            Var *var = (Var *) target;
-//            char *varName = get_colname(varSourceRte, var);
-//            AttrNumber targetEntryIndex = 0;
-//            bool foundTargetEntryIndex = false;
-//            char expectedColname[MAX_COLNAME_SIZE];
-//            ListCell *matViewColCell;
-//
-//            elog(
-//                LOG, "RewriteVarReferences: found Var=%s.%s. MatViewRte.colnames.length=%d",
-//                varSourceRte->eref->aliasname, varName, list_length(matViewRte->eref->colnames));
-//            snprintf(expectedColname, MAX_COLNAME_SIZE, "%s_%s",
-//                varSourceRte->eref->aliasname, varName);
-//
-//            for (matViewColCell = list_head(matViewRte->eref->colnames);
-//                matViewColCell != NULL && !foundTargetEntryIndex;
-//                matViewColCell = matViewColCell->next)
-//            {
-////                elog(LOG, "RewriteVarReferences: comparing expectedColname=%s to matViewColname=%s",
-////                     expectedColname, strVal(lfirst(matViewColCell)));
-//                if (strncmp(expectedColname, strVal(lfirst(matViewColCell)),
-//                    MAX_COLNAME_SIZE) == 0)
-//                {
-//                    foundTargetEntryIndex = true;
-//                    elog(
-//                        LOG, "RewriteVarReferences: Found matching column name for %s at index=%d",
-//                        expectedColname, targetEntryIndex);
-//                    SetVarattno(var, targetEntryIndex);
-//                    SetVarno(var, targetVarno);
-//                }
-//                targetEntryIndex++;
-//            }
-//            break;
-//        }
         case T_Aggref:
         {
             elog(LOG, "RewriteVarReferences: found Aggref");

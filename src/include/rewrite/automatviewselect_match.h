@@ -19,6 +19,8 @@
 
 extern bool DoesQueryMatchMatView(Query *query, Query *matViewQuery);
 
+extern bool CanQueryBeOptimized(Query *query);
+
 extern bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
     List *rtableTwo);
 

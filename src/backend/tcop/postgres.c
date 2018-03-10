@@ -880,6 +880,10 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
 				{
 					AddQuery(query, stmt);
 				}
+//				else
+//				{
+//					GetBestMatViewMatch(query);
+//				}
 			}
 		}
 
@@ -1070,44 +1074,56 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 						querytree_list->length == 1)
 		{
 //			elog(LOG, "Attempting to find matching MatViews for query...");
-			MemoryContext prevContext = SwitchToAutoMatViewContext();
-			Query *query = list_nth(querytree_list, 0);
-			MatView *matView = GetBestMatViewMatch(query);
-			if (matView != NULL)
+		    Query *queryCopy;
+		    MemoryContext prevContext;
+			ListCell *queryList;
+
+			foreach(queryList, querytree_list)
 			{
-//				elog(LOG, "Found matching MatView and now rewriting Query...");
-				char *newQuery = RewriteQuery(query, matView);
-				char *copiedQuery = MemoryContextStrdup(oldcontext, newQuery);
-				pfree(newQuery);
+				Query *query = lfirst_node(Query, queryList);
+				pg_plan_query(query, CURSOR_OPT_PARALLEL_OK, NULL);
+			    prevContext = SwitchToAutoMatViewContext();
+			    queryCopy = copyObject(query);
+				MatView *matView = GetBestMatViewMatch(queryCopy);
 
-//				elog(LOG, "Switching back to old context...");
-				MemoryContextSwitchTo(oldcontext);
-				elog(LOG, "Rewrote %s to: %s", query_string, copiedQuery);
-				// TODO: Do we need to do any other cleanup?
-
-				if (snapshot_set)
+				if (matView != NULL)
 				{
-//					elog(LOG, "Popping active snapshot before executing rewritten query");
-					PopActiveSnapshot();
-					snapshot_set = false;
-				}
+//					elog(LOG, "Found matching MatView and now rewriting Query...");
+					char *newQuery = RewriteQuery(queryCopy, matView);
+					char *copiedQuery = MemoryContextStrdup(oldcontext, newQuery);
+					pfree(queryCopy);
+					pfree(newQuery);
 
-				if (use_implicit_block)
+					//				elog(LOG, "Switching back to old context...");
+					MemoryContextSwitchTo(oldcontext);
+					pfree(query);
+					elog(LOG, "Rewrote %s to: %s", query_string, copiedQuery);
+					// TODO: Do we need to do any other cleanup?
+
+					if (snapshot_set)
+					{
+						//					elog(LOG, "Popping active snapshot before executing rewritten query");
+						PopActiveSnapshot();
+						snapshot_set = false;
+					}
+
+					if (use_implicit_block)
+					{
+//						elog(LOG, "Ending implicit transaction block");
+						EndImplicitTransactionBlock();
+					}
+
+					//				elog(LOG, "Finishing current transaction before executing rewritten query...");
+					finish_xact_command();
+					drop_unnamed_stmt();
+
+					elog(LOG, "Executing rewritten query...");
+					return exec_simple_query(copiedQuery, false);
+				}
+				else
 				{
-//					elog(LOG, "Ending implicit transaction block");
-					EndImplicitTransactionBlock();
+					MemoryContextSwitchTo(prevContext);
 				}
-
-//				elog(LOG, "Finishing current transaction before executing rewritten query...");
-				finish_xact_command();
-				drop_unnamed_stmt();
-
-				elog(LOG, "Executing rewritten query...");
-				return exec_simple_query(copiedQuery, false);
-			}
-			else
-			{
-				MemoryContextSwitchTo(prevContext);
 			}
 		}
 

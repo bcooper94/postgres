@@ -2,7 +2,7 @@
  * automatviewselect_unparse.c
  *
  *  Created on: Mar 9, 2018
- *      Author: brandon
+ *      Author: Brandon Cooper
  */
 
 #include "rewrite/automatviewselect_unparse.h"
@@ -466,25 +466,29 @@ char *UnparseQuals(List *quals, List *rangeTables)
     ListCell *qualCell;
     Expr *expr;
     size_t qualBufSize = TARGET_BUFFER_SIZE;
-    char *qualBuf;
+    char *qualBuf = NULL;
 
     elog(LOG, "UnparseQuals called...");
-    qualBuf = palloc(sizeof(char) * qualBufSize);
 
-    if (qualBuf == NULL)
+    if (quals != NIL)
     {
-        elog(ERROR, "UnparseQuals: failed to allocate output buffer");
-    }
-    else if (quals != NIL)
-    {
-        qualBuf[0] = '\0';
-        foreach(qualCell, quals)
+        qualBuf = palloc(sizeof(char) * qualBufSize);
+
+        if (qualBuf != NULL)
         {
-            expr = (Expr *) lfirst(qualCell);
-            if (qualBuf != NULL)
+            qualBuf[0] = '\0';
+            foreach(qualCell, quals)
             {
-                ExprToString(expr, rangeTables, qualBuf, qualBufSize);
+                expr = (Expr *) lfirst(qualCell);
+                if (qualBuf != NULL)
+                {
+                    ExprToString(expr, rangeTables, qualBuf, qualBufSize);
+                }
             }
+        }
+        else
+        {
+            elog(ERROR, "UnparseQuals: failed to allocate qualifiers buffer");
         }
     }
 

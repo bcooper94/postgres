@@ -2,7 +2,7 @@
  * automatviewselect.c
  *
  *  Created on: Dec 13, 2017
- *      Author: brandon
+ *      Author: Brandon Cooper
  */
 
 #include "rewrite/automatviewselect.h"
@@ -301,22 +301,22 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
     List *matViewQueries;
 
     CheckInitState();
-    oldContext = MemoryContextSwitchTo(AutoMatViewContext);
-    queryPlanStatsList = lappend(queryPlanStatsList,
-        CreateQueryPlanStats(query, plannedStatement));
-// TODO: Remove when done testing UnparseQuery
-    MatView *mView = UnparseQuery(query, true);
-    elog(LOG, "Unparsed Query: %s", mView->selectQuery);
-    FreeMatView(mView);
 
-// TODO: Set training threshold from postgres properties file
-    if (queryPlanStatsList->length > trainingSampleCount)
+    if (CanQueryBeOptimized(query))
     {
-        isCollectingQueries = false;
-        CreateRelevantMatViews();
-    }
+        oldContext = MemoryContextSwitchTo(AutoMatViewContext);
+        queryPlanStatsList = lappend(queryPlanStatsList,
+            CreateQueryPlanStats(query, plannedStatement));
 
-    MemoryContextSwitchTo(oldContext);
+        // TODO: Set training threshold from postgres properties file
+        if (queryPlanStatsList->length > trainingSampleCount)
+        {
+            isCollectingQueries = false;
+            CreateRelevantMatViews();
+        }
+
+        MemoryContextSwitchTo(oldContext);
+    }
 }
 
 int64 CreateMaterializedView(char *viewName, char *selectQuery)
@@ -513,18 +513,21 @@ bool IsCollectingQueries()
 MatView *GetBestMatViewMatch(Query *query)
 {
     List *matchingMatViews;
-    MatView *bestMatch;
+    MatView *bestMatch = NULL;
 
-    matchingMatViews = GetMatchingMatViews(query);
-    bestMatch = NULL;
-// TODO: filter returned MatViews to find best match
-
-    if (matchingMatViews != NIL && matchingMatViews->length > 0)
+    if (CanQueryBeOptimized(query))
     {
-        // Choose the first match for now
-        elog(LOG, "GetBestMatViewMatch choosing first MatView");
-        bestMatch = (MatView *) linitial(matchingMatViews);
-        elog(LOG, "GetBestMatViewMatch chose first MatView: %p", bestMatch);
+        elog(LOG, "GetBestMatViewMatch: finding best matching view");
+        matchingMatViews = GetMatchingMatViews(query);
+        // TODO: filter returned MatViews to find best match
+
+        if (matchingMatViews != NIL && matchingMatViews->length > 0)
+        {
+            // Choose the first match for now
+            elog(LOG, "GetBestMatViewMatch choosing first MatView");
+            bestMatch = (MatView *) linitial(matchingMatViews);
+            elog(LOG, "GetBestMatViewMatch chose first MatView: %p", bestMatch);
+        }
     }
 
     return bestMatch;
