@@ -123,8 +123,6 @@ RangeTblEntry *FindRte(Oid relid, List *rtable)
     ListCell *rteCell;
     RangeTblEntry *rte;
 
-//    elog(LOG, "FindRte: searching for relid=%d", relid);
-
     foreach(rteCell, rtable)
     {
         rte = lfirst_node(RangeTblEntry, rteCell);

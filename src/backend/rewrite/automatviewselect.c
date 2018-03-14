@@ -23,6 +23,13 @@
 #include "utils/builtins.h"
 #include "utils/guc_tables.h"
 
+#ifdef PG_MODULE_MAGIC
+PG_MODULE_MAGIC
+;
+#endif
+
+#define MAX_QUERY_RETRY_COUNT 3
+
 //typedef struct MatView
 //{
 //    char *name;
@@ -31,6 +38,14 @@
 //    List *renamedTargetList; // List (of TargetEntry) with renamed TargetEntries
 //    List *renamedRtable;
 //} MatView;
+
+typedef struct OutstandingQuery
+{
+    StringInfo query;
+    int tupleCount; /* Limit on number of returned tuples. 0 for unlimited */
+    int retryCount; /* How many times have we tried to execute this query? */
+    void (*callback)(SPITupleTable *, int64);
+} OutstandingQuery;
 
 typedef struct QueryPlanStats
 {
@@ -62,7 +77,8 @@ typedef struct TableQueryStats
 
 /** Internal state */
 extern MemoryContext AutoMatViewContext = NULL;
-static List *matViewIntoClauses = NIL;
+static List *outstandingQueries = NIL;
+
 //static dshash_table *selectQueryCounts = NULL;
 static List *queryStats = NIL;
 static List *plannedQueries = NIL;
@@ -70,12 +86,21 @@ static List *createdMatViews = NIL;
 static List *queryPlanStatsList = NIL;
 static bool isCollectingQueries = true;
 
+static bool isAutomatviewsReady = false;
+
 // Have we loaded the trainingSampleCount from postgresql.conf?
 static bool isTrainingSampleCountLoaded = false;
 static int trainingSampleCount = 1;
 
-// Internal state functions
-static void CheckInitState();
+// Internal state initialization functions
+static void PopulateUserTables();
+static void HandlePopulateUserTables(SPITupleTable *tuptable,
+    int64 processedCount);
+
+// Query execution functions
+static OutstandingQuery *CreateOutstandingQuery(char *query, int tupleCount,
+    void (*callback)(SPITupleTable *, int64));
+static void AddOutstandingQuery(OutstandingQuery *query);
 
 // Query stats functions
 static QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan);
@@ -91,31 +116,165 @@ static void PrintTableQueryStats(TableQueryStats *stats);
 static List *GetMatchingMatViews(Query *query);
 
 // MatView generation operations
-int64 CreateMaterializedView(char *viewName, char *selectQuery);
+static int64 ExecuteOutstandingQuery(OutstandingQuery *query);
+static int64 CreateMaterializedView(char *viewName, char *selectQuery);
 static void CreateRelevantMatViews();
 static void PopulateMatViewRenamedRTable(MatView *matView);
 static List *GetCostlyQueries(double costCutoffRatio);
 static List *GenerateInterestingQueries(List *queryPlanStats);
 static List *PruneQueries(List *queries);
 
+void InitializeAutomatviewModule()
+{
+    if (!isAutomatviewsReady)
+    {
+        elog(LOG, "Initializing Automatview module...");
+        if (AutoMatViewContext == NULL)
+        {
+            AutoMatViewContext = AllocSetContextCreate((MemoryContext) NULL,
+                "AutoMatViewContext",
+                ALLOCSET_DEFAULT_SIZES);
+        }
+
+        MemoryContext oldContext = SwitchToAutoMatViewContext();
+        PopulateUserTables();
+        MemoryContextSwitchTo(oldContext);
+    }
+}
+
+void PopulateUserTables()
+{
+    static char *getTablesQuery =
+        "SELECT n.nspname, c.relname, cast(c.oid as varchar(32)) "
+            "FROM pg_catalog.pg_class c "
+            "LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE c.relkind IN ('r','p','') "
+            "AND n.nspname <> 'pg_catalog' "
+            "AND n.nspname <> 'information_schema' "
+            "AND n.nspname !~ '^pg_toast' "
+            "AND pg_catalog.pg_table_is_visible(c.oid) "
+            "ORDER BY 1,2;";
+    char *testQuery = palloc(sizeof(char) * 1024);
+    AddOutstandingQuery(
+        CreateOutstandingQuery(getTablesQuery, 0, &HandlePopulateUserTables));
+}
+
+void HandlePopulateUserTables(SPITupleTable *tuptable, int64 processedCount)
+{
+    if (tuptable != NULL)
+    {
+        TupleDesc tupDesc = tuptable->tupdesc;
+        char tableNameBuf[8192];
+        char schemaBuf[8192];
+        char relidBuf[1024];
+        uint64 tupleIndex;
+        MemoryContext oldContext = SwitchToAutoMatViewContext();
+        ClearUserTables();
+
+        for (tupleIndex = 0; tupleIndex < processedCount; tupleIndex++)
+        {
+            HeapTuple tuple = tuptable->vals[tupleIndex];
+            strcpy(schemaBuf, SPI_getvalue(tuple, tupDesc, 1));
+            strcpy(tableNameBuf, SPI_getvalue(tuple, tupDesc, 2));
+            strcpy(relidBuf, SPI_getvalue(tuple, tupDesc, 3));
+            AddUserTable(strtol(relidBuf, relidBuf + 32, 10), schemaBuf,
+                tableNameBuf);
+        }
+
+        isAutomatviewsReady = true;
+        elog(LOG, "Automatviews is now ready to collect queries");
+        MemoryContextSwitchTo(oldContext);
+    }
+}
+
+void HandlePopulateMatViews(SPITupleTable *tuptable, int64 processedCount)
+{
+    if (tuptable != NULL)
+    {
+        HeapTuple tuple;
+        TupleDesc tupDesc = tuptable->tupdesc;
+        char matViewNameBuf[MAX_TABLENAME_SIZE];
+        char queryBuf[QUERY_BUFFER_SIZE];
+        MemoryContext oldContext = SwitchToAutoMatViewContext();
+
+        for (uint64 tupleIndex = 0; tupleIndex < processedCount; tupleIndex++)
+        {
+            tuple = tuptable->vals[tupleIndex];
+            strncpy(matViewNameBuf, SPI_getvalue(tuple, tupDesc, 1), MAX_TABLENAME_SIZE);
+            strncpy(queryBuf, SPI_getvalue(tuple, tupDesc, 2), QUERY_BUFFER_SIZE);
+            // TODO: Populate MatView list
+        }
+
+        MemoryContextSwitchTo(oldContext);
+    }
+}
+
+OutstandingQuery *CreateOutstandingQuery(char *query, int tupleCount,
+    void (*callback)(SPITupleTable *, int64))
+{
+    OutstandingQuery *outstandingQuery = palloc(sizeof(OutstandingQuery));
+    outstandingQuery->query = makeStringInfo();
+    appendStringInfo(outstandingQuery->query, query);
+    outstandingQuery->tupleCount = tupleCount;
+    outstandingQuery->retryCount = 0;
+    outstandingQuery->callback = callback;
+
+    return outstandingQuery;
+}
+
+/**
+ * Add an outstanding query to be executed later.
+ *
+ * NOTE: caller is responsible for palloc'ing query.
+ */
+void AddOutstandingQuery(OutstandingQuery *query)
+{
+    outstandingQueries = lappend(outstandingQueries, query);
+}
+
+/**
+ * Execute the first outstanding query.
+ * returns: true if a query was executed, false otherwise.
+ */
+bool ExecuteFirstOutstandingQuery()
+{
+    bool executedQuery = false;
+
+    elog(
+    LOG, "ExecuteFirstOustandingQuery: checking for outstanding queries...");
+    if (list_length(outstandingQueries) > 0)
+    {
+        OutstandingQuery *query = (OutstandingQuery *) linitial(
+            outstandingQueries);
+        elog(
+            LOG, "ExecuteFirstOustandingQuery: found outstanding query %p...", query);
+
+        if (query != NULL && query->retryCount < MAX_QUERY_RETRY_COUNT)
+        {
+            elog(
+                LOG, "ExecuteFirstOustandingQuery: executing %s", query->query->data);
+            query->retryCount++;
+            executedQuery = ExecuteOutstandingQuery(query) >= 0;
+
+            if (executedQuery || query->retryCount >= MAX_QUERY_RETRY_COUNT)
+            {
+                outstandingQueries = list_delete_first(outstandingQueries);
+            }
+            if (executedQuery && !isAutomatviewsReady)
+            {
+                // First outstanding query is initialization
+                isAutomatviewsReady = true;
+                elog(LOG, "Automatview is ready to collect queries");
+            }
+        }
+    }
+
+    return executedQuery;
+}
+
 MemoryContext SwitchToAutoMatViewContext()
 {
     return MemoryContextSwitchTo(AutoMatViewContext);
-}
-
-void CheckInitState()
-{
-    if (AutoMatViewContext == NULL)
-    {
-        AutoMatViewContext = AllocSetContextCreate((MemoryContext) NULL,
-            "AutoMatViewContext",
-            ALLOCSET_DEFAULT_SIZES);
-    }
-//	if (!isTrainingSampleCountLoaded)
-//	{
-//		elog(LOG, "Loading training sample count...");
-//		struct config_generic **configs = get_guc_variables();
-//	}
 }
 
 QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan)
@@ -300,11 +459,11 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
     MemoryContext oldContext;
     List *matViewQueries;
 
-    CheckInitState();
+    oldContext = MemoryContextSwitchTo(AutoMatViewContext);
+//    ExecuteFirstOutstandingQuery();
 
-    if (CanQueryBeOptimized(query))
+    if (IsQueryForUserTables(query) && CanQueryBeOptimized(query))
     {
-        oldContext = MemoryContextSwitchTo(AutoMatViewContext);
         queryPlanStatsList = lappend(queryPlanStatsList,
             CreateQueryPlanStats(query, plannedStatement));
 
@@ -314,9 +473,40 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
             isCollectingQueries = false;
             CreateRelevantMatViews();
         }
-
-        MemoryContextSwitchTo(oldContext);
     }
+
+    MemoryContextSwitchTo(oldContext);
+}
+
+int64 ExecuteOutstandingQuery(OutstandingQuery *query)
+{
+    int64 proc;
+    int ret = -1;
+
+    elog(LOG, "ExecuteQuery: executing %s", query);
+    int connectSuccess = SPI_connect();
+    elog(
+    LOG, "ExecuteSPIQuery: SPI_connect returned %d", connectSuccess);
+
+    if (connectSuccess == SPI_OK_CONNECT)
+    {
+        elog(LOG, "ExecuteSPIQuery: successfully connected. Executing query...");
+        ret = SPI_execute(query->query->data, false, query->tupleCount);
+        elog(LOG, "ExecuteSPIQuery: finished SPI_exec...");
+
+        if (query->callback != NULL)
+        {
+            query->callback(SPI_tuptable, SPI_processed);
+        }
+    }
+    else
+    {
+        elog(ERROR, "ExecuteSPIQuery failed to connect to SPI");
+    }
+
+    SPI_finish();
+
+    return ret;
 }
 
 int64 CreateMaterializedView(char *viewName, char *selectQuery)
@@ -501,6 +691,11 @@ List *PruneQueries(List *queries)
     return queries;
 }
 
+bool IsAutomatviewReady()
+{
+    return isAutomatviewsReady;
+}
+
 bool IsCollectingQueries()
 {
     return isCollectingQueries;
@@ -515,7 +710,7 @@ MatView *GetBestMatViewMatch(Query *query)
     List *matchingMatViews;
     MatView *bestMatch = NULL;
 
-    if (CanQueryBeOptimized(query))
+    if (IsQueryForUserTables(query) && CanQueryBeOptimized(query))
     {
         elog(LOG, "GetBestMatViewMatch: finding best matching view");
         matchingMatViews = GetMatchingMatViews(query);
@@ -574,7 +769,6 @@ void AddQueryStats(Query *query)
 
     elog(LOG, "AddQueryStats...");
 
-    CheckInitState();
     oldContext = MemoryContextSwitchTo(AutoMatViewContext);
     elog(LOG, "Copying query object");
     queryCopy = copyObject(query);

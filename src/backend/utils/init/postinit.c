@@ -61,6 +61,7 @@
 #include "utils/syscache.h"
 #include "utils/timeout.h"
 #include "utils/tqual.h"
+#include "rewrite/automatviewselect.h"
 
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
@@ -1038,6 +1039,8 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	/* close the transaction we started above */
 	if (!bootstrap)
 		CommitTransactionCommand();
+
+	InitializeAutomatviewModule();
 }
 
 /*

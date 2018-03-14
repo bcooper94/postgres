@@ -17,7 +17,13 @@
 #include "nodes/primnodes.h"
 #include "nodes/plannodes.h"
 
+extern void InitializeAutomatviewModule();
+
+extern bool ExecuteFirstOutstandingQuery();
+
 extern MemoryContext SwitchToAutoMatViewContext();
+
+extern bool IsAutomatviewReady();
 
 extern bool IsCollectingQueries();
 

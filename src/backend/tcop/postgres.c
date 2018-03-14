@@ -874,16 +874,10 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
 		{
 			stmt = pg_plan_query(query, cursorOptions, boundParams);
 
-			if (query->commandType == CMD_SELECT)
+			if (query->commandType == CMD_SELECT &&
+			    IsAutomatviewReady() && IsCollectingQueries())
 			{
-				if (IsCollectingQueries() == true)
-				{
-					AddQuery(query, stmt);
-				}
-//				else
-//				{
-//					GetBestMatViewMatch(query);
-//				}
+				AddQuery(query, stmt);
 			}
 		}
 
@@ -910,6 +904,9 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 	bool		was_logged = false;
 	bool		use_implicit_block;
 	char		msec_str[32];
+
+
+
 
 //	elog(LOG, "exec_simple_query executing %s", query_string);
 
@@ -1063,13 +1060,14 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 		 * these must outlive the execution context).
 		 */
 		oldcontext = MemoryContextSwitchTo(MessageContext);
+		ExecuteFirstOutstandingQuery();
 
 		// TODO: Intercept select queries for rewrite here?
 //		elog(LOG, "Analyzing and rewriting query");
 		querytree_list = pg_analyze_and_rewrite(parsetree, query_string,
 												NULL, 0, NULL);
 
-		if (attempt_rewrite && !IsCollectingQueries()
+		if (attempt_rewrite && IsAutomatviewReady() && !IsCollectingQueries()
 						&& parsetree_list->length == 1 &&
 						querytree_list->length == 1)
 		{
@@ -1097,7 +1095,7 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 					//				elog(LOG, "Switching back to old context...");
 					MemoryContextSwitchTo(oldcontext);
 					pfree(query);
-					elog(LOG, "Rewrote %s to: %s", query_string, copiedQuery);
+					elog(LOG, "Rewrote %s to:\n %s", query_string, copiedQuery);
 					// TODO: Do we need to do any other cleanup?
 
 					if (snapshot_set)

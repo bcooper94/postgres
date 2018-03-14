@@ -234,19 +234,33 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
             }
             else if (containsLeftRte)
             {
+                // Preserve the old RTEKind so we don't rewrite "TABLE_NAME_1 JOIN TABLE_NAME_2"
+                //  after the first JOIN ON statement when un-parsing the rewritten query
+                RTEKind oldRTEKind = leftRte->rtekind;
+
+                char *leftRteName = leftRte->eref->aliasname;
+                if (leftRte->rtekind == RTE_JOIN)
+                {
+                    leftRteName = rt_fetch(joinExpr->rtindex - 3, rootQuery->rtable)->eref->aliasname;
+                }
                 elog(
                     LOG, "Replacing leftTable=%s from Query.rtable with %s from MatView",
-                    leftRte->eref->aliasname,
+                    leftRteName,
                     ((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
+
                 RewriteQuals(rootQuery->rtable, joinExpr->quals,
                     list_length(rootQuery->rtable), matView->baseQuery->rtable,
                     matView->baseQuery->targetList);
                 CopyRte(leftRte, llast(rootQuery->rtable));
+                leftRte->rtekind = oldRTEKind;
             }
             // TODO: Handle the case when a the MatView is in the middle of multiple join statements
             //  e.g. it is one JoinExpr's leftJoin and the next JoinExpr's rightJoin
             else if (containsRightRte)
             {
+                // Preserve the old RTEKind so we don't rewrite "TABLE_NAME_1 JOIN TABLE_NAME_2"
+                //  after the first JOIN ON statement when un-parsing the rewritten query
+                RTEKind oldRTEKind = rightRte->rtekind;
                 elog(
                     LOG, "Replacing rightTable=%s from Query.rtable with %s from MatView",
                     rightRte->eref->aliasname,
@@ -255,6 +269,7 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
                     list_length(rootQuery->rtable), matView->baseQuery->rtable,
                     matView->baseQuery->targetList);
                 CopyRte(rightRte, llast(rootQuery->rtable));
+                rightRte->rtekind = oldRTEKind;
             }
 //            else if (containsLeftRte)
 //            {
@@ -371,9 +386,11 @@ void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
             Var *var = (Var *) target;
             AttrNumber targetEntryIndex = 1;
 
-//            elog(LOG, "RewriteVarReferences: found Var...");
-            RangeTblEntry *matViewRte = rt_fetch(var->varno,
+            RangeTblEntry *matViewRte = rt_fetch(targetVarno,
                 queryRtable);
+            elog(LOG, "RewriteVarReferences: found Var=%s.%s...",
+                rt_fetch(var->varno, queryRtable)->eref->aliasname,
+                get_colname(rt_fetch(var->varno, queryRtable), var));
 
             // Rewrite the Var to reference the MatView if it is in the MatView's targetList
             foreach(matViewTECell, matViewTargetList)

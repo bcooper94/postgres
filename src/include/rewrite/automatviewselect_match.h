@@ -17,6 +17,12 @@
 
 #include "nodes/pg_list.h"
 
+extern void ClearUserTables();
+
+extern void AddUserTable(Oid relid, char *schema, char *tableName);
+
+extern bool IsQueryForUserTables(Query *query);
+
 extern bool DoesQueryMatchMatView(Query *query, Query *matViewQuery);
 
 extern bool CanQueryBeOptimized(Query *query);

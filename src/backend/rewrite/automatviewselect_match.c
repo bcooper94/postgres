@@ -9,6 +9,17 @@
 
 #include "rewrite/automatviewselect_utils.h"
 
+typedef struct UserTable
+{
+    Oid relid;
+    StringInfo tableName;
+    StringInfo schema;
+} UserTable;
+
+static List *userTables = NIL;
+
+static bool IsUserTable(Oid relid);
+
 static bool IsTargetListMatch(List *rtable, List *targetList,
     List *matViewTargetList, List *matViewRtable);
 
@@ -30,6 +41,84 @@ static bool AreQualsMatch(List *matViewTargetList, List *matViewRtable,
 static bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
     List *queryRtable, List *matViewGroupClause, List *matViewTargetList,
     List *matViewRtable);
+
+void ClearUserTables()
+{
+    if (userTables != NIL)
+    {
+        elog(LOG, "Clearing user tables...");
+        list_free(userTables);
+        userTables = NIL;
+    }
+}
+
+/*
+ * Add a user table from the target schema.
+ *
+ * NOTE: Caller is responsible for ensuring that
+ *  CurrentMemoryContext is AutoMatViewContext.
+ */
+void AddUserTable(Oid relid, char *schema, char *tableName)
+{
+    UserTable *userTable = palloc(sizeof(UserTable));
+
+    if (userTable != NULL)
+    {
+        userTable->relid = relid;
+        userTable->tableName = makeStringInfo();
+        appendStringInfo(userTable->tableName, tableName);
+        userTable->schema = makeStringInfo();
+        appendStringInfo(userTable->schema, schema);
+        userTables = lappend(userTables, userTable);
+        elog(LOG, "AddUserTable: adding %s.%s with relid=%d", userTable->schema->data,
+            userTable->tableName->data, userTable->relid);
+    }
+    else
+    {
+        elog(ERROR, "AddUserTable failed to allocate new UserTable");
+    }
+}
+
+/*
+ * Determine whether or not this Query references only user tables.
+ */
+bool IsQueryForUserTables(Query *query)
+{
+    ListCell *rteCell;
+    RangeTblEntry *rte;
+    bool isForUserTables = true;
+
+    if (query != NULL && list_length(query->rtable) > 0)
+    {
+        for (rteCell = list_head(query->rtable);
+            rteCell != NULL && isForUserTables; rteCell = rteCell->next)
+        {
+            rte = lfirst_node(RangeTblEntry, rteCell);
+            isForUserTables = IsUserTable(rte->relid);
+        }
+    }
+
+    return isForUserTables;
+}
+
+bool IsUserTable(Oid relid)
+{
+    ListCell *tableCell;
+    UserTable *table;
+    bool isThisUserTable = false;
+
+    if (userTables != NIL)
+    {
+        for (tableCell = list_head(userTables);
+            tableCell != NULL && !isThisUserTable; tableCell = tableCell->next)
+        {
+            table = (UserTable *) lfirst(tableCell);
+            isThisUserTable = table->relid == relid;
+        }
+    }
+
+    return isThisUserTable;
+}
 
 /**
  * Determine if the given query can be rewritten to use the given materialized view.
@@ -61,6 +150,8 @@ bool CanQueryBeOptimized(Query *query)
 {
     ListCell *joinCell;
     bool hasJoins = false;
+
+    // TODO: Maybe check schema to ensure no tables are internal Postgres tables
 
     if (query->jointree != NULL && list_length(query->jointree->fromlist) > 0)
     {
@@ -97,8 +188,6 @@ bool IsTargetListMatch(List *rtable, List *targetList, List *matViewTargetList,
          *  TargetEntry's originating RTE are present in the MatView's Query and the
          *  TargetEntry is present in the MatView's targetList.
          */
-//        elog(
-//        LOG, "IsTargetListMatch: Finding RTE and checking if Expr is match...");
         isMatch = FindRte(targetEntry->resorigtbl, matViewRtable) == NULL
             || IsExprMatch(targetEntry->expr, rtable, matViewTargetList,
                 matViewRtable);
@@ -123,9 +212,9 @@ bool IsExprRTEInMatView(Expr *expr, List *queryRtable, List *matViewRtable)
             isInMatView = FindRte(varRte->relid,
 //                matView->baseQuery->rtable) != NULL;
                 matViewRtable) != NULL;
-//            elog(LOG, "IsExprRTEInMatView: Found Var=%s.%s. RTE in MatView? %s",
-//            varRte->eref->aliasname, get_colname(varRte, var),
-//            isInMatView ? "true" : "false");
+            elog(LOG, "IsExprRTEInMatView: Found Var=%s.%s. RTE in MatView? %s",
+            varRte->eref->aliasname, get_colname(varRte, var),
+            isInMatView ? "true" : "false");
             break;
         }
         case T_Aggref:
@@ -167,10 +256,9 @@ bool IsExprMatch(Expr *expr, List *queryRtable, List *matViewTargetList,
     TargetEntry *viewTargetEntry;
     bool isExprMatch = false;
 
-//    elog(LOG, "IsExprMatch called...");
     for (viewTargetEntryCell = list_head(matViewTargetList);
-        !isExprMatch && viewTargetEntryCell != ((void *) 0);
-        viewTargetEntryCell = viewTargetEntryCell->next)
+        !isExprMatch && viewTargetEntryCell != NULL; viewTargetEntryCell =
+            viewTargetEntryCell->next)
     {
         viewTargetEntry = lfirst_node(TargetEntry, viewTargetEntryCell);
         // TODO: Should we only compare non-join tables?
@@ -184,6 +272,9 @@ bool IsExprMatch(Expr *expr, List *queryRtable, List *matViewTargetList,
 
 /**
  * Ensure the MatView's FROM clause is a match for the Query's FROM clause.
+ *
+ * A MatView's FROM clause is a match for a Query's FROM clause if the MatView's
+ *  FROM clause is a subset of the Query's FROM clause.
  */
 bool IsFromClauseMatch(Query *query, List *matViewTargetList,
     List *matViewRtable, FromExpr *matViewJoinTree)
@@ -192,13 +283,18 @@ bool IsFromClauseMatch(Query *query, List *matViewTargetList,
     ListCell *fromCell;
     bool isMatch = true;
 
-    if (query->jointree != NULL)
+    if (query->jointree == NULL && matViewJoinTree == NULL)
+    {
+        elog(
+            LOG, "IsFromClauseMatch: both from clauses are NULL; considering them equal");
+    }
+    else if (query->jointree == NULL || matViewJoinTree == NULL)
+    {
+        isMatch = false;
+    }
+    else
     {
         from = query->jointree;
-//        elog(LOG, "IsFromClauseMatch called. fromlist.length=%d",
-//        list_length(from->fromlist));
-
-//        foreach(fromCell, from->fromlist)
         for (fromCell = list_head(from->fromlist); fromCell != NULL && isMatch;
             fromCell = fromCell->next)
         {
@@ -206,10 +302,6 @@ bool IsFromClauseMatch(Query *query, List *matViewTargetList,
             isMatch = IsFromClauseMatchRecurs(query, lfirst(fromCell),
                 matViewTargetList, matViewRtable);
         }
-    }
-    else
-    {
-        isMatch = matViewJoinTree == NULL;
     }
 
     if (isMatch)
@@ -274,13 +366,13 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
             //  for how RTEs and join RTEs are added to the Query's list of RTEs
 
             // NOTE: Un-parsing of mixed JOIN ON clauses with table cross products will fail
-            if (!IsA(joinExpr->larg, RangeTblRef))
+            if (IsA(joinExpr->larg, JoinExpr))
             {
                 isMatch = isMatch
                     && IsFromClauseMatchRecurs(rootQuery, joinExpr->larg,
                         matViewTargetList, matViewRtable);
             }
-            if (!IsA(joinExpr->rarg, RangeTblRef))
+            if (IsA(joinExpr->rarg, JoinExpr))
             {
                 isMatch = isMatch
                     && IsFromClauseMatchRecurs(rootQuery, joinExpr->rarg,
@@ -291,7 +383,16 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
             {
                 joinRte = rt_fetch(joinExpr->rtindex, rootQuery->rtable);
                 leftRte = left_join_table(joinExpr, rootQuery->rtable);
+                if (leftRte->rtekind == RTE_JOIN)
+                {
+                    leftRte = rt_fetch(joinExpr->rtindex - 3,
+                        rootQuery->rtable);
+                    elog(
+                        LOG, "IsFromClauseMatchRecurs: leftRte is an RTE_JOIN. New leftRte=%s",
+                        leftRte->eref->aliasname);
+                }
                 rightRte = right_join_table(joinExpr, rootQuery->rtable);
+                // TODO: Ensure this and AreQualsMatch is correct
                 isMatch = isMatch
                     && AreQualsMatch(matViewTargetList, matViewRtable,
                         joinExpr->quals, rootQuery->rtable);
@@ -336,14 +437,21 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
     return isMatch;
 }
 
+/**
+ * Determine whether or not the list of qualifiers from a given query is a match
+ *  for the given MatView.
+ *
+ *  A list of qualifiers is a match for the MatView if all Vars within each qualifier
+ *   expression are either present in the MatView's targetList (matViewTargetList),
+ *   or if the Var's original table is not present within the MatView's rtable list
+ *   (matViewRtable), e.g. the Var's original table can be later joined to this MatView.
+ */
 bool AreQualsMatch(List *matViewTargetList, List *matViewRtable, List *quals,
     List *queryRtable)
 {
     ListCell *qualCell;
     Expr *expr;
     bool isMatch = true;
-
-//    elog(LOG, "AreQualsMatch called...");
 
     if (quals != NIL)
     {
@@ -362,6 +470,7 @@ bool AreQualsMatch(List *matViewTargetList, List *matViewRtable, List *quals,
 
                     if (list_length(opExpr) > 0)
                     {
+                        elog(LOG, "AreQualsMatch: checking qualifiers...");
                         for (argCell = list_head(opExpr->args);
                             argCell != NULL && isMatch; argCell = argCell->next)
                         {
@@ -456,6 +565,19 @@ bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
 //                    varOne->varattno, varTwo->varattno);
                 equal = varRteOne->relid == varRteTwo->relid
                     && varOne->varattno == varTwo->varattno;
+                if (equal)
+                {
+                    elog(LOG, "AreExprsEqual: found match for %s.%s == %s.%s",
+                    varRteOne->eref->aliasname, get_colname(varRteOne, varOne),
+                    varRteTwo->eref->aliasname, get_colname(varRteTwo, varTwo));
+                }
+                else
+                {
+                    elog(
+                        LOG, "AreExprsEqual: did not find match for %s.%s and %s.%s",
+                        varRteOne->eref->aliasname, get_colname(varRteOne, varOne),
+                        varRteTwo->eref->aliasname, get_colname(varRteTwo, varTwo));
+                }
                 break;
             }
             case T_Aggref:

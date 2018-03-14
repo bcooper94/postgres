@@ -381,14 +381,14 @@ char *UnparseGroupClause(List *groupClause, List *targetList, List *rtable)
         {
             groupStmt = lfirst_node(SortGroupClause, groupCell);
             targetEntry = (TargetEntry *) list_nth(targetList,
-                groupStmt->tleSortGroupRef);
+                groupStmt->tleSortGroupRef - 1);
             TargetEntryToString(targetEntry, rtable, false, targetBuffer,
             TARGET_BUFFER_SIZE);
-//            elog(
-//                LOG, "Found SortGroupClause nodeTag=%d, sortGroupRef=%d, eqop=%d, sortop=%d, targetEntry=%s",
-//                nodeTag(groupStmt), groupStmt->tleSortGroupRef,
-//                groupStmt->eqop, groupStmt->sortop,
-//                targetBuffer);
+            elog(
+                LOG, "Found SortGroupClause nodeTag=%d, sortGroupRef=%d, eqop=%d, sortop=%d, targetEntry=%s",
+                nodeTag(groupStmt), groupStmt->tleSortGroupRef,
+                groupStmt->eqop, groupStmt->sortop,
+                targetBuffer);
 
             strncat(groupClauseStr, targetBuffer, TARGET_BUFFER_SIZE);
 
