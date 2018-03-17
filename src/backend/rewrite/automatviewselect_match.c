@@ -94,6 +94,7 @@ bool IsQueryForUserTables(Query *query)
             rteCell != NULL && isForUserTables; rteCell = rteCell->next)
         {
             rte = lfirst_node(RangeTblEntry, rteCell);
+            elog(LOG, "IsQueryForUserTables: checking RTE=%s", rte->eref->aliasname);
             isForUserTables = IsUserTable(rte->relid);
         }
     }

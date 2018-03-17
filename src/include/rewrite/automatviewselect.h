@@ -29,7 +29,8 @@ extern bool IsCollectingQueries();
 
 extern void AddQueryStats(Query *query);
 
-extern void AddQuery(Query *query, PlannedStmt *plannedStatement);
+extern void AddQuery(char *queryString, Query *query,
+    PlannedStmt *plannedStatement);
 
 extern void InspectQuery(Query *query);
 

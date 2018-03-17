@@ -12,6 +12,7 @@
 
 #include "catalog/pg_type.h"
 #include "parser/parsetree.h"
+#include "utils/memutils.h"
 
 #define STAR_COL "*"
 #define RENAMED_STAR_COL "all"
@@ -27,12 +28,18 @@ MatView *UnparseQuery(Query *query, bool includeWhereClause)
     char targetListBuf[QUERY_BUFFER_SIZE];
     List *renamedTargets;
 
+    MemoryContextStats(CurrentMemoryContext);
     targetListBuf[0] = '\0';
     matView = palloc(sizeof(MatView));
-    matView->name = palloc(sizeof(char) * 256);
-    snprintf(matView->name, 256, "Matview_%d", rand());
+    matView->name = palloc(sizeof(char) * MAX_TABLENAME_SIZE);
+    snprintf(matView->name, MAX_TABLENAME_SIZE, "Matview_%d", rand());
 
-    matView->baseQuery = copyObject(query);
+//    elog(LOG, "UnparseQuery: current MemContext=%s", CurrentMemoryContext->name);
+    // TODO: this is returning garbage
+//    matView->baseQuery = copyObject(query);
+    matView->baseQuery = query;
+//    elog(LOG, "UnparseQuery: baseQuery from MemContext=%s",
+//        GetMemoryChunkContext(matView->baseQuery)->name);
 
     matView->selectQuery = palloc(sizeof(char) * QUERY_BUFFER_SIZE);
     strcpy(matView->selectQuery, "SELECT ");
@@ -97,6 +104,7 @@ MatView *UnparseQuery(Query *query, bool includeWhereClause)
     }
 
     elog(LOG, "Constructed full select query: %s", matView->selectQuery);
+    MemoryContextStats(CurrentMemoryContext);
 
     return matView;
 }

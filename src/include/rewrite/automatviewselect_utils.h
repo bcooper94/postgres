@@ -34,7 +34,8 @@
 typedef struct MatView
 {
     char *name;
-    char *selectQuery;
+    char *selectQuery; // SELECT query string used to construct this materialized view
+    unsigned long storedQueryId; // ID of the automatview.stored_queries entry for this MatView
     Query *baseQuery; // Query object which this MatView is based on
     List *renamedTargetList; // List (of TargetEntry) with renamed TargetEntries
     List *renamedRtable;

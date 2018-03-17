@@ -874,11 +874,11 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
 		{
 			stmt = pg_plan_query(query, cursorOptions, boundParams);
 
-			if (query->commandType == CMD_SELECT &&
-			    IsAutomatviewReady() && IsCollectingQueries())
-			{
-				AddQuery(query, stmt);
-			}
+//			if (query->commandType == CMD_SELECT &&
+//			    IsAutomatviewReady() && IsCollectingQueries())
+//			{
+//				AddQuery(query, stmt);
+//			}
 		}
 
 		stmt_list = lappend(stmt_list, stmt);
@@ -1071,7 +1071,7 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 						&& parsetree_list->length == 1 &&
 						querytree_list->length == 1)
 		{
-//			elog(LOG, "Attempting to find matching MatViews for query...");
+			elog(LOG, "Attempting to find matching MatViews for query...");
 		    Query *queryCopy;
 		    MemoryContext prevContext;
 			ListCell *queryList;
@@ -1128,6 +1128,27 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 //		elog(LOG, "Planning queries");
 		plantree_list = pg_plan_queries(querytree_list,
 										CURSOR_OPT_PARALLEL_OK, NULL);
+
+		elog(LOG, "exec_simple_query: querytree_list.length=%d, plantree_list.length=%d",
+		    list_length(querytree_list), list_length(plantree_list));
+		if (list_length(querytree_list) == 1 && list_length(plantree_list) == 1)
+		{
+		    ListCell *queryCell, *planCell;
+		    Query *query;
+		    PlannedStmt *plan;
+
+		    forboth(queryCell, querytree_list, planCell, plantree_list)
+		    {
+		        query = lfirst_node(Query, queryCell);
+		        plan = lfirst_node(PlannedStmt, planCell);
+
+		        if (query->commandType == CMD_SELECT &&
+		            IsAutomatviewReady() && IsCollectingQueries())
+		        {
+		            AddQuery(query_string, query, plan);
+		        }
+		    }
+		}
 
 		/* Done with the snapshot used for parsing/planning */
 		if (snapshot_set)
@@ -4075,7 +4096,6 @@ PostgresMain(int argc, char *argv[],
 	/*
 	 * Non-error queries loop here.
 	 */
-
 	for (;;)
 	{
 		/*
@@ -4160,6 +4180,7 @@ PostgresMain(int argc, char *argv[],
 		 * STDIN doing the same thing.)
 		 */
 		DoingCommandRead = true;
+
 
 		/*
 		 * (3) read a command (loop blocks here)
@@ -4452,6 +4473,7 @@ PostgresMain(int argc, char *argv[],
 								firstchar)));
 		}
 	}							/* end of input-reading loop */
+
 }
 
 /*
