@@ -1062,7 +1062,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 		oldcontext = MemoryContextSwitchTo(MessageContext);
 		ExecuteFirstOutstandingQuery();
 
-		// TODO: Intercept select queries for rewrite here?
 //		elog(LOG, "Analyzing and rewriting query");
 		querytree_list = pg_analyze_and_rewrite(parsetree, query_string,
 												NULL, 0, NULL);
@@ -1079,9 +1078,9 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 			foreach(queryList, querytree_list)
 			{
 				Query *query = lfirst_node(Query, queryList);
-				pg_plan_query(query, CURSOR_OPT_PARALLEL_OK, NULL);
-			    prevContext = SwitchToAutoMatViewContext();
 			    queryCopy = copyObject(query);
+				PlannedStmt *plan = pg_plan_query(queryCopy, CURSOR_OPT_PARALLEL_OK, NULL);
+			    prevContext = SwitchToAutoMatViewContext();
 				MatView *matView = GetBestMatViewMatch(queryCopy);
 
 				if (matView != NULL)
@@ -1089,7 +1088,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 //					elog(LOG, "Found matching MatView and now rewriting Query...");
 					char *newQuery = RewriteQuery(queryCopy, matView);
 					char *copiedQuery = MemoryContextStrdup(oldcontext, newQuery);
-					pfree(queryCopy);
 					pfree(newQuery);
 
 					//				elog(LOG, "Switching back to old context...");
@@ -1121,6 +1119,13 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 				else
 				{
 					MemoryContextSwitchTo(prevContext);
+				}
+
+				pfree(queryCopy);
+
+				if (plan != NULL)
+				{
+				    pfree(plan);
 				}
 			}
 		}

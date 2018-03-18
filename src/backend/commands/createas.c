@@ -155,12 +155,6 @@ create_ctas_internal(List *attrList, IntoClause *into)
 		default:
 			relpersistence = "unknown";
 		}
-		elog(LOG,
-				"creatas.c: relname=%s, schemaname=%s, catalogname=%s, relpersistence=%s",
-				rangeVar->relname,
-				rangeVar->schemaname != NULL ? rangeVar->schemaname : "null",
-				rangeVar->catalogname != NULL ? rangeVar->catalogname : "null",
-				relpersistence);
 
 		/* StoreViewQuery scribbles on tree, so make a copy */
 		Query	   *query = (Query *) copyObject(into->viewQuery);

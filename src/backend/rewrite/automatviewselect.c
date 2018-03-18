@@ -56,7 +56,7 @@ static bool isAutomatviewsReady = false;
 
 // Have we loaded the trainingSampleCount from postgresql.conf?
 static bool isTrainingSampleCountLoaded = false;
-static int trainingSampleCount = 1;
+static int trainingSampleCount = 2;
 
 // Internal state initialization functions
 static void PopulateUserTables();
@@ -247,7 +247,7 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
             CreateQueryPlanStats(query, plannedStatement));
 
         // TODO: Set training threshold from postgres properties file
-        if (queryPlanStatsList->length > trainingSampleCount)
+        if (queryPlanStatsList->length >= trainingSampleCount)
         {
             isCollectingQueries = false;
             CreateRelevantMatViews();
@@ -495,7 +495,7 @@ MatView *GetBestMatViewMatch(Query *query)
         matchingMatViews = GetMatchingMatViews(query);
         // TODO: filter returned MatViews to find best match
 
-        if (matchingMatViews != NIL && matchingMatViews->length > 0)
+        if (list_length(matchingMatViews) > 0)
         {
             // Choose the first match for now
             elog(LOG, "GetBestMatViewMatch choosing first MatView");

@@ -213,6 +213,8 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
             {
                 (*joinsRemoved)++;
                 joinExpr->rtindex = 0; // JoinExpr.rtindex of 0 means no join
+                // Get rid of this join, and have dependent joins consider this a relation
+//                joinRte->rtekind = RTE_RELATION;
 
                 if (leftRte->rtekind == RTE_JOIN)
                 {
@@ -240,7 +242,16 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
                 char *leftRteName = leftRte->eref->aliasname;
                 if (leftRte->rtekind == RTE_JOIN)
                 {
-                    leftRteName = rt_fetch(joinExpr->rtindex - 3, rootQuery->rtable)->eref->aliasname;
+                    RangeTblEntry *actualLeftRte = rt_fetch(
+                        joinExpr->rtindex - 3, rootQuery->rtable);
+                    leftRteName = actualLeftRte->eref->aliasname;
+
+                }
+                if (joinExpr->larg == NULL && joinExpr->rarg == NULL)
+                {
+                    elog(
+                        LOG, "RewriteJoinTreeRecurs: left and right args of %s JOIN %s is NULL",
+                        leftRteName, rightRte->eref->aliasname);
                 }
                 elog(
                     LOG, "Replacing leftTable=%s from Query.rtable with %s from MatView",
@@ -347,11 +358,10 @@ void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
             Var *var = (Var *) target;
             AttrNumber targetEntryIndex = 1;
 
-            RangeTblEntry *matViewRte = rt_fetch(targetVarno,
-                queryRtable);
+            RangeTblEntry *matViewRte = rt_fetch(targetVarno, queryRtable);
             elog(LOG, "RewriteVarReferences: found Var=%s.%s...",
-                rt_fetch(var->varno, queryRtable)->eref->aliasname,
-                get_colname(rt_fetch(var->varno, queryRtable), var));
+            rt_fetch(var->varno, queryRtable)->eref->aliasname,
+            get_colname(rt_fetch(var->varno, queryRtable), var));
 
             // Rewrite the Var to reference the MatView if it is in the MatView's targetList
             foreach(matViewTECell, matViewTargetList)

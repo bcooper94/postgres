@@ -13,6 +13,8 @@
 
 #include "postgres.h"
 
+#include "lib/stringinfo.h"
+
 #include "rewrite/automatviewselect_utils.h"
 
 extern MatView *UnparseQuery(Query *query, bool includeWhereClause);
@@ -25,9 +27,8 @@ extern TargetEntry *CreateRenamedTargetEntry(TargetEntry *baseTE, char *newName,
 
 extern char *UnparseRangeTableEntries(List *rtable);
 
-extern void UnparseFromExprRecurs(Query *rootQuery, Node *node,
-    int fromClauseIndex, size_t fromClauseLength, char *selectQuery,
-    size_t selectQuerySize);
+extern void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
+    size_t fromClauseLength, StringInfo fromClause, size_t selectQuerySize);
 
 extern char *UnparseGroupClause(List *groupClause, List *targetList,
     List *rtable);

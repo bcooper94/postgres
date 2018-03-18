@@ -47,15 +47,19 @@ MatView *UnparseQuery(Query *query, bool includeWhereClause)
     {
         int index = 0;
         from = query->jointree;
+        StringInfo fromClause = makeStringInfo();
 
         foreach(listCell, from->fromlist)
         {
             // NOTE: Un-parsing of mixed JOIN ON clauses with table cross products will fail
             UnparseFromExprRecurs(query, lfirst(listCell), index,
-                from->fromlist->length, matView->selectQuery,
+                from->fromlist->length, fromClause,
                 QUERY_BUFFER_SIZE);
             index++;
         }
+
+        strcat(matView->selectQuery, fromClause->data);
+        pfree(fromClause->data);
 
         if (includeWhereClause)
         {
@@ -207,7 +211,7 @@ char *UnparseRangeTableEntries(List *rtable)
 }
 
 void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
-    size_t fromClauseLength, char *selectQuery, size_t selectQuerySize)
+    size_t fromClauseLength, StringInfo fromClause, size_t selectQuerySize)
 {
     RangeTblEntry *joinRte, *leftRte, *rightRte;
     char *qualStr;
@@ -260,13 +264,13 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
             if (!IsA(joinExpr->larg, RangeTblRef))
             {
                 UnparseFromExprRecurs(rootQuery, joinExpr->larg,
-                    fromClauseIndex, fromClauseLength, selectQuery,
+                    fromClauseIndex, fromClauseLength, fromClause,
                     selectQuerySize);
             }
             if (!IsA(joinExpr->rarg, RangeTblRef))
             {
                 UnparseFromExprRecurs(rootQuery, joinExpr->rarg,
-                    fromClauseIndex, fromClauseLength, selectQuery,
+                    fromClauseIndex, fromClauseLength, fromClause,
                     selectQuerySize);
             }
 
@@ -282,22 +286,31 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
                 leftRte->eref->aliasname,
                 joinTag, rightRte->eref->aliasname);
 
-                if (leftRte->rtekind == RTE_JOIN)
+//                if (leftRte->rtekind == RTE_JOIN)
+                if (fromClause->len > 0)
                 {
-                    snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s ON %s",
-                        joinTag, rightRte->eref->aliasname, qualStr);
+                    elog(LOG, "UnparseFromExprRecurs: leftRte is JOIN");
+                    appendStringInfo(fromClause, " %s %s ON %s", joinTag,
+                        rightRte->eref->aliasname, qualStr);
+//                    snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s ON %s",
+//                        joinTag, rightRte->eref->aliasname, qualStr);
                 }
                 else
                 {
-                    snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s %s ON %s",
+                    elog(LOG, "UnparseFromExprRecurs: leftRte is JOIN");
+                    appendStringInfo(fromClause, " %s %s %s ON %s",
                         leftRte->eref->aliasname, joinTag,
                         rightRte->eref->aliasname, qualStr);
+
+//                    snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s %s ON %s",
+//                        leftRte->eref->aliasname, joinTag,
+//                        rightRte->eref->aliasname, qualStr);
                 }
 
                 pfree(qualStr);
                 qualStr = NULL;
 
-                strncat(selectQuery, joinBuf, selectQuerySize);
+//                strncat(selectQuery, joinBuf, selectQuerySize);
             }
             else
             {
@@ -313,15 +326,17 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
 
             if (fromClauseIndex < fromClauseLength - 1)
             {
-                snprintf(joinBuf, QUERY_BUFFER_SIZE, "%s, ",
-                    rte->eref->aliasname);
+//                snprintf(joinBuf, QUERY_BUFFER_SIZE, "%s, ",
+//                    rte->eref->aliasname);
+                appendStringInfo(fromClause, "%s, ", rte->eref->aliasname);
             }
             else
             {
-                strncpy(joinBuf, rte->eref->aliasname, QUERY_BUFFER_SIZE);
+//                strncpy(joinBuf, rte->eref->aliasname, QUERY_BUFFER_SIZE);
+                appendStringInfo(fromClause, rte->eref->aliasname);
             }
 
-            strcat(selectQuery, joinBuf);
+//            strcat(selectQuery, joinBuf);
         }
         else if (IsA(node, RangeTblEntry))
         {
