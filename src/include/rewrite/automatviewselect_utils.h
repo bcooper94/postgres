@@ -53,6 +53,4 @@ extern void SetVarno(Expr *expr, Index varno);
 
 extern RangeTblEntry *FindRte(Oid relid, List *rtable);
 
-extern void PrintQueryInfo(Query *query);
-
 #endif

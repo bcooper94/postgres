@@ -30,15 +30,6 @@ PG_MODULE_MAGIC
 
 #define MAX_QUERY_RETRY_COUNT 3
 
-//typedef struct MatView
-//{
-//    char *name;
-//    char *selectQuery;
-//    Query *baseQuery; // Query object which this MatView is based on
-//    List *renamedTargetList; // List (of TargetEntry) with renamed TargetEntries
-//    List *renamedRtable;
-//} MatView;
-
 typedef struct OutstandingQuery
 {
     StringInfo query;
@@ -53,35 +44,10 @@ typedef struct QueryPlanStats
     PlannedStmt *plan;
 } QueryPlanStats;
 
-typedef struct ColumnStats
-{
-    char *colName;
-    unsigned int selectCounts;
-} ColumnStats;
-
-typedef struct SelectQueryStats
-{
-    unsigned int numColumns;
-    List *columnStats; /* List of ColumnStats */
-
-} SelectQueryStats;
-
-typedef struct TableQueryStats
-{
-    char *tableName;
-    unsigned int selectCounts;
-    unsigned int updateCounts;
-    unsigned int deleteCounts;
-    SelectQueryStats *selectStats;
-} TableQueryStats;
-
 /** Internal state */
 extern MemoryContext AutoMatViewContext = NULL;
 static List *outstandingQueries = NIL;
 
-//static dshash_table *selectQueryCounts = NULL;
-static List *queryStats = NIL;
-static List *plannedQueries = NIL;
 static List *createdMatViews = NIL;
 static List *queryPlanStatsList = NIL;
 static bool isCollectingQueries = true;
@@ -104,13 +70,6 @@ static void AddOutstandingQuery(OutstandingQuery *query);
 
 // Query stats functions
 static QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan);
-static ColumnStats *CreateColumnStats(char *colName);
-static ColumnStats *GetColumnStats(SelectQueryStats *stats, char *colName);
-static SelectQueryStats *CreateSelectQueryStats(List *targetList);
-static void UpdateSelectQueryStats(SelectQueryStats *stats, List *targetList);
-static TableQueryStats *CreateTableQueryStats(char *tableName, List *targetList);
-static TableQueryStats *FindTableQueryStats(char *tableName);
-static void PrintTableQueryStats(TableQueryStats *stats);
 
 // MatView selection functions
 static List *GetMatchingMatViews(Query *query);
@@ -142,6 +101,10 @@ void InitializeAutomatviewModule()
     }
 }
 
+/*
+ * Populate a list of user tables. Queries will only be used to generate
+ *  materialized views if they only select from these tables.
+ */
 void PopulateUserTables()
 {
     static char *getTablesQuery =
@@ -154,7 +117,6 @@ void PopulateUserTables()
             "AND n.nspname !~ '^pg_toast' "
             "AND pg_catalog.pg_table_is_visible(c.oid) "
             "ORDER BY 1,2;";
-    char *testQuery = palloc(sizeof(char) * 1024);
     AddOutstandingQuery(
         CreateOutstandingQuery(getTablesQuery, 0, &HandlePopulateUserTables));
 }
@@ -183,28 +145,6 @@ void HandlePopulateUserTables(SPITupleTable *tuptable, int64 processedCount)
 
         isAutomatviewsReady = true;
         elog(LOG, "Automatviews is now ready to collect queries");
-        MemoryContextSwitchTo(oldContext);
-    }
-}
-
-void HandlePopulateMatViews(SPITupleTable *tuptable, int64 processedCount)
-{
-    if (tuptable != NULL)
-    {
-        HeapTuple tuple;
-        TupleDesc tupDesc = tuptable->tupdesc;
-        char matViewNameBuf[MAX_TABLENAME_SIZE];
-        char queryBuf[QUERY_BUFFER_SIZE];
-        MemoryContext oldContext = SwitchToAutoMatViewContext();
-
-        for (uint64 tupleIndex = 0; tupleIndex < processedCount; tupleIndex++)
-        {
-            tuple = tuptable->vals[tupleIndex];
-            strncpy(matViewNameBuf, SPI_getvalue(tuple, tupDesc, 1), MAX_TABLENAME_SIZE);
-            strncpy(queryBuf, SPI_getvalue(tuple, tupDesc, 2), QUERY_BUFFER_SIZE);
-            // TODO: Populate MatView list
-        }
-
         MemoryContextSwitchTo(oldContext);
     }
 }
@@ -293,177 +233,16 @@ QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan)
     return stats;
 }
 
-ColumnStats *CreateColumnStats(char *colName)
-{
-    ColumnStats *stats = (ColumnStats *) palloc(sizeof(ColumnStats));
-
-    if (stats == NULL)
-    {
-        elog(ERROR, "Failed to allocate memory for ColumnStats");
-    }
-    else
-    {
-        stats->colName = pnstrdup(colName, MAX_TABLENAME_SIZE);
-        stats->selectCounts = 0;
-    }
-
-    return stats;
-}
-
-ColumnStats *GetColumnStats(SelectQueryStats *stats, char *colName)
-{
-    ListCell *colCell;
-    ColumnStats *colStats;
-
-    foreach(colCell, stats->columnStats)
-    {
-        colStats = lfirst_node(ColumnStats, colCell);
-
-        if (strncmp(colName, colStats->colName, MAX_COLNAME_SIZE) == 0)
-        {
-            elog(LOG, "Found column stats for %s", colName);
-            return colStats;
-        }
-    }
-
-    return NULL;
-}
-
-SelectQueryStats *CreateSelectQueryStats(List *targetList)
-{
-    ListCell *targetEntryCell;
-    SelectQueryStats *selectStats;
-
-    elog(LOG, "CreateSelectQueryStats called");
-
-    selectStats = (SelectQueryStats *) palloc(sizeof(SelectQueryStats));
-    selectStats->columnStats = NIL;
-
-    if (selectStats == NULL)
-    {
-        elog(ERROR, "Failed to allocate memory for SelectQueryStats");
-    }
-    else
-    {
-        selectStats->numColumns = targetList->length;
-
-        foreach(targetEntryCell, targetList)
-        {
-            selectStats->columnStats = list_append_unique(
-                selectStats->columnStats,
-                CreateColumnStats(strVal(lfirst(targetEntryCell))));
-        }
-    }
-
-    return selectStats;
-}
-
-/**
- * Update the column select counts for the given SelectQueryStats.
- * stats: target SelectQueryStats to be updated.
- * targetList: list (of TargetEntry) containing the selected columns.
- */
-void UpdateSelectQueryStats(SelectQueryStats *stats, List *targetList)
-{
-    ListCell *targetEntryCell;
-    TargetEntry *targetEntry;
-    ColumnStats *colStats;
-
-    if (targetList != NIL)
-    {
-        foreach(targetEntryCell, targetList)
-        {
-            targetEntry = lfirst_node(TargetEntry, targetEntryCell);
-
-            if (!targetEntry->resjunk && targetEntry->resname != NULL)
-            {
-//				colName = strVal(lfirst(col_cell));
-                colStats = GetColumnStats(stats, targetEntry->resname);
-
-                if (colStats != NULL)
-                {
-                    colStats->selectCounts++;
-                }
-
-                elog(LOG, "Updating select count for RTE col name: %s",
-                targetEntry->resname);
-            }
-        }
-    }
-}
-
-/**
- * Assume we are already in AutoMatViewContext.
- *
- * tableName: Name of the table to create stats for.
- * targetList: target list (of TargetEntry) for the table.
- */
-TableQueryStats *CreateTableQueryStats(char *tableName, List *targetList)
-{
-    TableQueryStats *stats;
-
-    stats = (TableQueryStats *) palloc(sizeof(TableQueryStats));
-
-    if (stats == NULL)
-    {
-        elog(ERROR, "Failed to allocate memory for TableQueryStats");
-    }
-    else
-    {
-        stats->selectCounts = 0;
-        stats->updateCounts = 0;
-        stats->deleteCounts = 0;
-        stats->selectStats = CreateSelectQueryStats(targetList);
-        stats->tableName = pnstrdup(tableName, MAX_TABLENAME_SIZE);
-    }
-
-    return stats;
-}
-
-TableQueryStats *FindTableQueryStats(char *tableName)
-{
-    ListCell *statsCell;
-    TableQueryStats *curStats;
-    TableQueryStats *stats = NULL;
-
-//	elog(LOG, "Finding query stats for table=%s", tableName);
-
-    if (queryStats != NIL)
-    {
-        foreach(statsCell, queryStats)
-        {
-            curStats = (TableQueryStats *) lfirst(statsCell);
-            if (strcmp(curStats->tableName, tableName) == 0)
-            {
-//				elog(LOG, "Found stats for %s", curStats->tableName);
-                return curStats;
-            }
-        }
-    }
-
-    return stats;
-}
-
-void PrintTableQueryStats(TableQueryStats *stats)
-{
-    ListCell *colStatsCell;
-    ColumnStats *colStats;
-
-    elog(
-        LOG, "<TableQueryStats table=%s, selectCounts=%d, updateCounts=%d, deleteCounts=%d>",
-        stats->tableName, stats->selectCounts, stats->updateCounts, stats->deleteCounts);
-}
-
 void AddQuery(Query *query, PlannedStmt *plannedStatement)
 {
     MemoryContext oldContext;
     List *matViewQueries;
 
     oldContext = MemoryContextSwitchTo(AutoMatViewContext);
-//    ExecuteFirstOutstandingQuery();
 
     if (IsQueryForUserTables(query) && CanQueryBeOptimized(query))
     {
+        elog(LOG, "Adding query to stored queries list");
         queryPlanStatsList = lappend(queryPlanStatsList,
             CreateQueryPlanStats(query, plannedStatement));
 
@@ -757,86 +536,3 @@ List *GetMatchingMatViews(Query *query)
 
     return matchingViews;
 }
-
-void AddQueryStats(Query *query)
-{
-    ListCell *rte_cell;
-    ListCell *col_cell;
-    RangeTblEntry *rte;
-    TableQueryStats *stats;
-    MemoryContext oldContext;
-    Query *queryCopy;
-
-    elog(LOG, "AddQueryStats...");
-
-    oldContext = MemoryContextSwitchTo(AutoMatViewContext);
-    elog(LOG, "Copying query object");
-    queryCopy = copyObject(query);
-
-    foreach(rte_cell, query->rtable)
-    {
-        rte = (RangeTblEntry *) lfirst(rte_cell);
-
-        switch (rte->rtekind)
-        {
-            case RTE_RELATION:
-                stats = FindTableQueryStats(rte->eref->aliasname);
-
-                if (stats == NULL)
-                {
-                    elog(
-                        LOG, "Creating new query stats for %s", rte->eref->aliasname);
-                    stats = CreateTableQueryStats(rte->eref->aliasname,
-                    // RangeTblEntry.eref.colnames contains list of all column names every time
-                        rte->eref->colnames);
-                    queryStats = list_append_unique(queryStats, stats);
-                }
-
-                switch (query->commandType)
-                {
-                    case CMD_SELECT:
-                        elog(LOG, "Analyzing select query");
-                        stats->selectCounts++;
-                        // Query.targetList contains only currently selected columns
-                        UpdateSelectQueryStats(stats->selectStats,
-                            query->targetList);
-                        break;
-                    case CMD_INSERT:
-                        elog(LOG, "Analyzing insert query");
-                        break;
-                    case CMD_UPDATE:
-                        stats->updateCounts++;
-                        elog(LOG, "Analyzing update query");
-                        break;
-                    case CMD_DELETE:
-                        stats->deleteCounts++;
-                        elog(LOG, "Analyzing delete query");
-                        break;
-                    default:
-                        elog(
-                        WARNING, "Couldn't recognize given query command type");
-                }
-                if (rte->eref)
-                {
-                    elog(
-                    LOG, "Select RTE relation alias name with %d columns: %s",
-                    rte->eref->colnames->length, rte->eref->aliasname);
-
-                    foreach(col_cell, rte->eref->colnames)
-                    {
-                        elog(LOG, "Select RTE col name: %s",
-                        strVal(lfirst(col_cell)));
-                    }
-                }
-
-//				PrintTableQueryStats(stats);
-                break;
-            case RTE_JOIN:
-                elog(LOG, "RTE Join found");
-                break;
-        }
-    }
-
-    MemoryContextSwitchTo(oldContext);
-}
-

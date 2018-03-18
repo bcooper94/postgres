@@ -59,7 +59,6 @@ void SetVarattno(Expr *expr, AttrNumber varattno)
     {
         case T_Var:
         {
-//          elog(LOG, "Setting varattno for Var to %d", varattno);
             Var *var = (Var *) expr;
             var->varattno = varattno;
             break;
@@ -69,8 +68,6 @@ void SetVarattno(Expr *expr, AttrNumber varattno)
             Aggref *aggref = (Aggref *) expr;
             ListCell *argCell;
             TargetEntry *argTE;
-
-//          elog(LOG, "Setting varattno for args in Aggref to %d", varattno);
 
             foreach(argCell, aggref->args)
             {
@@ -90,7 +87,6 @@ void SetVarno(Expr *expr, Index varno)
     {
         case T_Var:
         {
-//            elog(LOG, "Setting varno for Var to %d", varno);
             Var *var = (Var *) expr;
             var->varno = varno;
             break;
@@ -100,8 +96,6 @@ void SetVarno(Expr *expr, Index varno)
             Aggref *aggref = (Aggref *) expr;
             ListCell *argCell;
             TargetEntry *argTE;
-
-//            elog(LOG, "Setting varno for args in Aggref to %d", varno);
 
             foreach(argCell, aggref->args)
             {
@@ -134,62 +128,4 @@ RangeTblEntry *FindRte(Oid relid, List *rtable)
     }
 
     return NULL;
-}
-
-void PrintQueryInfo(Query *query)
-{
-    ListCell *rte_cell;
-    ListCell *col_cell;
-    ListCell *targetList;
-    RangeTblEntry *rte;
-
-    if (query->rtable && query->rtable->length > 0)
-    {
-        elog(
-        LOG, "Select statement number of RTEs: %d, number of TargetEntries: %d",
-        query->rtable->length, query->targetList->length);
-
-        foreach(targetList, query->targetList)
-        {
-            TargetEntry *te = lfirst_node(TargetEntry, targetList);
-
-            /* junk columns don't get aliases */
-            if (te->resjunk)
-            {
-                continue;
-            }
-            elog(LOG, "RTE Target entry: %s",
-            te->resname);
-        }
-
-        foreach(rte_cell, query->rtable)
-        {
-            rte = (RangeTblEntry *) lfirst(rte_cell);
-
-            switch (rte->rtekind)
-            {
-                case RTE_RELATION:
-                    if (rte->eref)
-                    {
-                        elog(
-                            LOG, "Select RTE relation alias name with %d columns: %s",
-                            rte->eref->colnames->length, rte->eref->aliasname);
-
-                        foreach(col_cell, rte->eref->colnames)
-                        {
-                            elog(LOG, "Select RTE col name: %s",
-                            strVal(lfirst(col_cell)));
-                        }
-                    }
-                    break;
-                case RTE_JOIN:
-                    elog(LOG, "RTE Join found");
-                    break;
-            }
-        }
-    }
-    else
-    {
-        elog(LOG, "No RTEs found in select statement");
-    }
 }

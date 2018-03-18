@@ -48,7 +48,6 @@
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
-#include "rewrite/automatviewselect.h"
 
 
 typedef struct
@@ -587,17 +586,12 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 				 (errmsg("policies not yet implemented for this command"))));
 
 
-	if (is_matview)
-	{
-		AddMatView(into);
-	}
 	/*
 	 * Tentatively mark the target as populated, if it's a matview and we're
 	 * going to fill it; otherwise, no change needed.
 	 */
 	if (is_matview && !into->skipData)
 	{
-		elog(LOG, "Creating materialized view from creatas.c::intorel_startup");
 		SetMatViewPopulatedState(intoRelationDesc, true);
 	}
 

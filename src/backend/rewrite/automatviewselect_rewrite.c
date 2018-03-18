@@ -224,7 +224,6 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
                 }
                 else
                 {
-                    // TODO: Remove this join
                     elog(
                         LOG, "Replacing JOIN of leftTable=%s and rightTable=%s with MatView table=%s",
                         leftRte->eref->aliasname,
@@ -271,50 +270,12 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
                 CopyRte(rightRte, llast(rootQuery->rtable));
                 rightRte->rtekind = oldRTEKind;
             }
-//            else if (containsLeftRte)
-//            {
-//                CopyRte(leftRte, llast(rootQuery->rtable));
-//            }
-//            else if (containsRightRte)
-//            {
-//                // TODO: replace right RTE with MatView RTE
-//                RewriteQuals(rightRte, joinExpr->quals,
-//                    list_length(rootQuery->rtable), matView->baseQuery->targetList);
-//                CopyRte(rightRte, llast(rootQuery->rtable));
-//            }
-
-            if (leftRte->rtekind == RTE_JOIN)
-            {
-//                  snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s ON %s", joinTag,
-//                              rightRte->eref->aliasname, qualStr);
-            }
-            else
-            {
-//                  snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s %s ON %s",
-//                              leftRte->eref->aliasname, joinTag,
-//                              rightRte->eref->aliasname, qualStr);
-            }
         }
     }
     else if (IsA(node, RangeTblRef))
     {
-        RangeTblRef *rtRef = (RangeTblRef *) node;
-        RangeTblEntry *rte = rt_fetch(rtRef->rtindex, rootQuery->rtable);
-
-        if (fromClauseIndex < fromClauseLength - 1)
-        {
-            //              elog(LOG, "UnparseFromExpr: no next entry for fromExprCell");
-//                  snprintf(joinBuf, QUERY_BUFFER_SIZE, "%s, ",
-//                              rte->eref->aliasname);
-        }
-        else
-        {
-//                  strncpy(joinBuf, rte->eref->aliasname, QUERY_BUFFER_SIZE);
-            //              elog(LOG, "UnparseFromExpr: copied table name to joinBUf");
-        }
-
-//              strcat(selectQuery, joinBuf);
-        //          elog(LOG, "UnparseFromExpr: concatenated joinBuf to selectQuery");
+//        RangeTblRef *rtRef = (RangeTblRef *) node;
+//        RangeTblEntry *rte = rt_fetch(rtRef->rtindex, rootQuery->rtable);
     }
     else if (IsA(node, RangeTblEntry))
     {

@@ -27,15 +27,7 @@ extern bool IsAutomatviewReady();
 
 extern bool IsCollectingQueries();
 
-extern void AddQueryStats(Query *query);
-
 extern void AddQuery(Query *query, PlannedStmt *plannedStatement);
-
-extern void InspectQuery(Query *query);
-
-extern List *SearchApplicableMatViews(RangeVar *rangeVar);
-
-extern void AddMatView(IntoClause *into);
 
 extern MatView *GetBestMatViewMatch(Query *query);
 

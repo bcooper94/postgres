@@ -70,7 +70,8 @@ void AddUserTable(Oid relid, char *schema, char *tableName)
         userTable->schema = makeStringInfo();
         appendStringInfo(userTable->schema, schema);
         userTables = lappend(userTables, userTable);
-        elog(LOG, "AddUserTable: adding %s.%s with relid=%d", userTable->schema->data,
+        elog(
+            LOG, "AddUserTable: adding %s.%s with relid=%d", userTable->schema->data,
             userTable->tableName->data, userTable->relid);
     }
     else
@@ -94,9 +95,14 @@ bool IsQueryForUserTables(Query *query)
             rteCell != NULL && isForUserTables; rteCell = rteCell->next)
         {
             rte = lfirst_node(RangeTblEntry, rteCell);
-            isForUserTables = IsUserTable(rte->relid);
+            elog(LOG, "IsQueryForUserTables: checking RTE=%s, relid=%d, rtekind=%d",
+            rte->eref->aliasname, rte->relid, rte->rtekind);
+            isForUserTables = rte->rtekind != RTE_RELATION
+                || IsUserTable(rte->relid);
         }
     }
+
+    elog(LOG, "IsQueryForUserTables? %s", isForUserTables ? "true" : "false");
 
     return isForUserTables;
 }
@@ -209,9 +215,7 @@ bool IsExprRTEInMatView(Expr *expr, List *queryRtable, List *matViewRtable)
         {
             Var *var = (Var *) expr;
             RangeTblEntry *varRte = rt_fetch(var->varno, queryRtable);
-            isInMatView = FindRte(varRte->relid,
-//                matView->baseQuery->rtable) != NULL;
-                matViewRtable) != NULL;
+            isInMatView = FindRte(varRte->relid, matViewRtable) != NULL;
             elog(LOG, "IsExprRTEInMatView: Found Var=%s.%s. RTE in MatView? %s",
             varRte->eref->aliasname, get_colname(varRte, var),
             isInMatView ? "true" : "false");
@@ -409,18 +413,11 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
                         leftRte->eref->aliasname, joinTag, rightRte->eref->aliasname);
                 }
             }
-//            else
-//            {
-//                elog(LOG, "Found JoinExpr.rtindex == 0. Skipping...");
-//            }
         }
         else if (IsA(queryNode, RangeTblRef))
         {
-//            elog(LOG, "IsFromClauseMatchRecurs: found RangeTblRef in jointree");
-            RangeTblRef *rtRef = (RangeTblRef *) queryNode;
-//            elog(LOG, "UnparseFromExprRecurs: RangeTblRef.rtindex=%d",
-//            rtRef->rtindex);
-            RangeTblEntry *rte = rt_fetch(rtRef->rtindex, rootQuery->rtable);
+//            RangeTblRef *rtRef = (RangeTblRef *) queryNode;
+//            RangeTblEntry *rte = rt_fetch(rtRef->rtindex, rootQuery->rtable);
         }
         else if (IsA(queryNode, RangeTblEntry))
         {
@@ -508,8 +505,6 @@ bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
     bool isMatch = list_length(queryGroupClause)
         == list_length(matViewGroupClause);
 
-//    elog(LOG, "IsGroupByClauseMatch called...");
-
     if (isMatch && list_length(queryGroupClause) > 0)
     {
         for (queryGroupCell = list_head(queryGroupClause), matViewGroupCell =
@@ -527,16 +522,6 @@ bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
             isMatch = AreExprsEqual(queryTargetEntry->expr, queryRtable,
                 matViewTargetEntry->expr, matViewRtable);
         }
-    }
-//    else if (isMatch)
-//    {
-//        elog(LOG, "IsGroupByClauseMatch: no group clauses "
-//        "found in either Query or MatView. Considering match");
-//    }
-
-    if (isMatch)
-    {
-        elog(LOG, "Group clause matches MatView");
     }
 
     return isMatch;
@@ -557,12 +542,6 @@ bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
                 Var *varTwo = (Var *) exprTwo;
                 RangeTblEntry *varRteOne = rt_fetch(varOne->varno, rtableOne);
                 RangeTblEntry *varRteTwo = rt_fetch(varTwo->varno, rtableTwo);
-//                elog(
-//                    LOG, "Comparing Vars: varOne.relid=%d, varTwo.relid=%d tableOne.relid=%d (%s) to tableTwo.relid=%d (%s) and varOne.varattno=%d to varTwo.varattno=%d",
-//                    varRteOne->relid, varRteTwo->relid,
-//                    varRteOne->relid, varRteOne->eref->aliasname,
-//                    varRteTwo->relid, varRteTwo->eref->aliasname,
-//                    varOne->varattno, varTwo->varattno);
                 equal = varRteOne->relid == varRteTwo->relid
                     && varOne->varattno == varTwo->varattno;
                 if (equal)
@@ -585,11 +564,6 @@ bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
                 ListCell *argCellOne, *argCellTwo;
                 Aggref *aggrefOne = (Aggref *) exprOne;
                 Aggref *aggrefTwo = (Aggref *) exprTwo;
-//                elog(
-//                    LOG, "Comparing Aggrefs: aggrefOne.aggfnoid=%d, aggrefTwo.aggfnoid=%d, aggrefOne.args.length=%d, aggrefTwo.args.length=%d",
-//                    aggrefOne->aggfnoid, aggrefTwo->aggfnoid,
-//                    aggrefOne->args != NIL ? aggrefOne->args->length : 0,
-//                    aggrefTwo->args != NIL ? aggrefTwo->args->length : 0);
                 equal = aggrefOne->aggfnoid == aggrefTwo->aggfnoid
                     && aggrefOne->args != NIL && aggrefTwo->args != NIL
                     && aggrefOne->args->length == aggrefTwo->args->length;

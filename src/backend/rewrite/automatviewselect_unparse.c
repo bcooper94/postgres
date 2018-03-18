@@ -47,8 +47,6 @@ MatView *UnparseQuery(Query *query, bool includeWhereClause)
     {
         int index = 0;
         from = query->jointree;
-        elog(
-            LOG, "Unparsing FROM clause. fromlist.length=%d", from->fromlist->length);
 
         foreach(listCell, from->fromlist)
         {
@@ -62,9 +60,6 @@ MatView *UnparseQuery(Query *query, bool includeWhereClause)
         if (includeWhereClause)
         {
             whereClauseStr = UnparseQuals(from->quals, query->rtable);
-            elog(
-                LOG, "UnparseQuery: unparsing WHERE clause. query.jointree.quals=%s",
-                whereClauseStr);
         }
     }
     else
@@ -90,10 +85,6 @@ MatView *UnparseQuery(Query *query, bool includeWhereClause)
             strncat(matView->selectQuery, groupClauseStr, QUERY_BUFFER_SIZE);
             pfree(groupClauseStr);
         }
-    }
-    if (query->groupingSets != NIL)
-    {
-        elog(LOG, "Found grouping sets in query");
     }
 
     elog(LOG, "Constructed full select query: %s", matView->selectQuery);
@@ -126,10 +117,6 @@ List *UnparseTargetList(List *targetList, List *rtable, bool renameTargets,
         foreach(listCell, targetList)
         {
             targetEntry = lfirst_node(TargetEntry, listCell);
-//            elog(
-//                    LOG, "TargetEntry %s, TE.expr nodeTag: %d, resorigtable=%d, column attribute number=%d",
-//                    targetEntry->resname, nodeTag(targetEntry->expr),
-//                    targetEntry->resorigtbl, targetEntry->resorigcol);
             renamedTarget = TargetEntryToString(targetEntry, rtable,
                 renameTargets, targetBuffer,
                 TARGET_BUFFER_SIZE);
@@ -138,11 +125,6 @@ List *UnparseTargetList(List *targetList, List *rtable, bool renameTargets,
                 renamedTargetEntry = CreateRenamedTargetEntry(targetEntry,
                     renamedTarget,
                     true);
-                if (nodeTag(targetEntry->expr) == T_Var)
-                {
-                    Var *v = (Var *) targetEntry->expr;
-//                    elog(LOG, "Var.varno after rename=%d", v->varno);
-                }
                 renamedTargetEntries = list_append_unique(renamedTargetEntries,
                     renamedTargetEntry);
             }
@@ -177,7 +159,6 @@ TargetEntry *CreateRenamedTargetEntry(TargetEntry *baseTE, char *newName,
     // Need to convert Aggrefs to Var
     if (flattenExprTree && nodeTag(renamedTE->expr) != T_Var)
     {
-        elog(LOG, "CreateRenamedTargetEntry flattening expression tree to Var");
         // TODO: Preserve old varno and varattno using Var.varnoold and Var.varoattno
         Var *flattenedVar = makeNode(Var);
         pfree(renamedTE->expr);
@@ -419,42 +400,25 @@ void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
     if (rte->rtekind == RTE_JOIN)
     {
         RangeTblEntry *varRte = rt_fetch(var->varno, rangeTables);
-//        elog(LOG, "Var from table=%s: %s", varRte->eref->aliasname,
-//        get_colname(varRte, var));
 
         // If rte is an RTE_JOIN, left should be the right table of last join
         RangeTblEntry *leftRte = rt_fetch(joinExpr->rtindex - 3, rangeTables);
         RangeTblEntry *rightRte = right_join_table(joinExpr, rangeTables);
-//        elog(LOG, "CreateJoinVarStr found JOIN RTE: rtindex=%d, name=%s, left.name=%s, right.name=%s",
-//                        joinExpr->rtindex, rte->eref->aliasname,
-//                        leftRte->eref->aliasname, rightRte->eref->aliasname);
 
         // Var was from left RTE
         if (var->varattno <= leftRte->eref->colnames->length)
         {
-//            elog(
-//                LOG, "Renaming tableName in Join RTE to left table: %s", leftRte->eref->aliasname);
             targetRte = leftRte;
         }
         // Var from right RTE
         else
         {
-//            elog(
-//                LOG, "Renaming tableName in Join RTE to right table: %s", rightRte->eref->aliasname);
             targetRte = rightRte;
         }
     }
 
     sprintf(varStrBuf, "%s.%s", targetRte->eref->aliasname,
         get_colname(targetRte, var));
-
-//    elog(LOG, "Var str for rtekind=%d, varattno=%d %s",
-//    rte->rtekind, var->varattno, varStrBuf);
-
-    if (var->varno == INDEX_VAR)
-    {
-        elog(LOG, "Var is an index var");
-    }
 }
 
 /**
@@ -550,8 +514,6 @@ char *AggrefToString(TargetEntry *aggrefEntry, List *rtable, bool renameAggref,
 void ExprToString(Expr *expr, List *rangeTables, char *targetBuf,
     size_t targetBufSize)
 {
-//    elog(LOG, "ExprToString Expr tag: %d", nodeTag(expr));
-
     switch (nodeTag(expr))
     {
         case T_Const:
@@ -560,25 +522,18 @@ void ExprToString(Expr *expr, List *rangeTables, char *targetBuf,
         case T_Var:
         {
             Var *var = (Var *) expr;
-//            elog(
-//                LOG, "ExprToString: Found Var with varno=%d, varattno=%d. rtable.length=%d",
-//                var->varno, var->varattno, list_length(rangeTables));
-
             char *colName = VarToString((Var *) expr, rangeTables, false,
                 targetBuf, targetBufSize);
+
             if (colName != NULL)
             {
                 pfree(colName);
             }
-//            elog(LOG, "ExprToString: converted Var to %s", targetBuf);
             break;
         }
         case T_OpExpr:
         {
             OpExpr *opExpr = (OpExpr *) expr;
-//            elog(LOG, "Found OpExpr opno=%d, number of args=%d",
-//            opExpr->opno,
-//            opExpr->args != NULL ? opExpr->args->length : 0);
 
             if (opExpr->args != NULL)
             {
@@ -632,17 +587,12 @@ char *TargetEntryToString(TargetEntry *targetEntry, List *rtable,
     {
         case T_Var:
         {
-//            elog(LOG, "TargetEntryToString: converting Var to string. expr=%p",
-//            targetEntry->expr);
             Var *var = (Var *) targetEntry->expr;
-//            elog(LOG, "TargetEntryToString: var.varno=%d, rtable length=%d",
-//            var->varno, rtable->length);
             targetEntryRename = VarToString(var, rtable, renameTargets, outBuf,
                 outBufSize);
             break;
         }
         case T_Aggref:
-//            elog(LOG, "TargetEntryToString: converting Aggref to string...");
             targetEntryRename = AggrefToString(targetEntry, rtable, true,
                 outBuf, outBufSize);
             break;
@@ -662,24 +612,10 @@ char *VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
 
     varRte = rt_fetch(var->varno, rtable);
     tableName = varRte->eref->aliasname;
-//    elog(
-//        LOG, "VarToString fetched RTE=%s", varRte != NULL ? varRte->eref->aliasname : "NULL");
 
     if (var->varattno > 0)
     {
-//        elog(
-//            LOG, "VarToString getting colName from colnames with length=%d and varattno=%d",
-//            varRte->eref->colnames != NIL ? varRte->eref->colnames->length : 0,
-//            var->varattno);
         colName = renamedColName = get_colname(varRte, var);
-//                                        strVal(lfirst(list_nth_cell(varRte->eref->colnames, var->varattno - 1)));
-//        elog(LOG, "VarToString: colname=%s", colName);
-
-//        if (renameVar)
-//        {
-//            elog(
-//                    LOG, "VarToString renaming Var. targetEntry->resname=%s", targetEntry->resname);
-//        }
     }
     else
     {
@@ -690,7 +626,6 @@ char *VarToString(Var *var, List *rtable, bool renameVar, char *varBuf,
     returnedVarName = palloc(sizeof(char) * TARGET_BUFFER_SIZE);
     if (renameVar == true)
     {
-//        elog(LOG, "VarToString renaming Var");
         snprintf(returnedVarName, TARGET_BUFFER_SIZE, "%s_%s", tableName,
             renamedColName);
         snprintf(varBuf, varBufSize, "%s.%s AS %s", tableName, colName,
