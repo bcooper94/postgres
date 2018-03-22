@@ -23,6 +23,9 @@ static bool IsUserTable(Oid relid);
 static bool IsTargetListMatch(List *rtable, List *targetList,
     List *matViewTargetList, List *matViewRtable);
 
+static bool IsTargetListSubset(List *rtable, List *targetList,
+    List *otherTargetList, List *otherRtable);
+
 static bool IsExprRTEInMatView(Expr *expr, List *queryRtable,
     List *matViewRtable);
 
@@ -37,6 +40,9 @@ static bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
 
 static bool AreQualsMatch(List *matViewTargetList, List *matViewRtable,
     List *quals, List *queryRtable);
+
+static bool AreQualsEqual(List *targetQuals, List *targetRtable,
+    List *otherQuals, List *otherRtable);
 
 static bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
     List *queryRtable, List *matViewGroupClause, List *matViewTargetList,
@@ -95,14 +101,15 @@ bool IsQueryForUserTables(Query *query)
             rteCell != NULL && isForUserTables; rteCell = rteCell->next)
         {
             rte = lfirst_node(RangeTblEntry, rteCell);
-            elog(LOG, "IsQueryForUserTables: checking RTE=%s, relid=%d, rtekind=%d",
+            elog(
+            LOG, "IsQueryForUserTables: checking RTE=%s, relid=%d, rtekind=%d",
             rte->eref->aliasname, rte->relid, rte->rtekind);
             isForUserTables = rte->rtekind != RTE_RELATION
                 || IsUserTable(rte->relid);
         }
     }
 
-    elog(LOG, "IsQueryForUserTables? %s", isForUserTables ? "true" : "false");
+//    elog(LOG, "IsQueryForUserTables? %s", isForUserTables ? "true" : "false");
 
     return isForUserTables;
 }
@@ -146,6 +153,45 @@ bool DoesQueryMatchMatView(Query *query, Query *matViewQuery)
             matViewQuery->rtable);
 }
 
+/*
+ * Determine whether or not targetQuery is a subset of otherQuery.
+ *
+ * targetQuery is a subset of otherQuery if all of the following
+ *  criterion are met: targetQuery's targetList is a subset of
+ *  otherQuery's targetList, targetQuery's rtable is a subset
+ *  of otherQuery's rtable, targetQuery's join tree is a subset
+ *  of otherQuery's join tree, both both queries have the same WHERE
+ *  clause, and both queries have the same GROUP BY clause.
+ *
+ * returns: true if targetQuery is a subset of otherQuery.
+ */
+bool IsQuerySubsetOfOtherQuery(Query *targetQuery, Query *otherQuery,
+    bool includeWhereClause)
+{
+    bool isSubset = IsTargetListSubset(targetQuery->rtable,
+        targetQuery->targetList, otherQuery->targetList, otherQuery->rtable)
+        && IsFromClauseMatch(targetQuery, otherQuery->targetList,
+            otherQuery->rtable, otherQuery->jointree)
+        && IsGroupByClauseMatch(targetQuery->groupClause,
+            targetQuery->targetList, targetQuery->rtable,
+            otherQuery->groupClause, otherQuery->targetList,
+            otherQuery->rtable);
+
+    if (includeWhereClause && isSubset)
+    {
+        isSubset = (targetQuery->jointree == NULL
+            && otherQuery->jointree == NULL)
+            || (targetQuery->jointree->quals == NULL
+                && targetQuery->jointree->quals == NULL)
+            || AreQualsEqual(targetQuery->jointree->quals, targetQuery->rtable,
+                otherQuery->jointree->quals, otherQuery->rtable);
+    }
+
+    elog(LOG, "IsQuerySubsetOfOtherQuery? %s", isSubset ? "true": "false");
+
+    return isSubset;
+}
+
 /**
  * Determine whether or not a Query should be rewritten to use any materialized views,
  *  or if it should be used to create a new materialized view. e.g. if there are no joins,
@@ -157,8 +203,7 @@ bool CanQueryBeOptimized(Query *query)
     ListCell *joinCell;
     bool hasJoins = false;
 
-    // TODO: Maybe check schema to ensure no tables are internal Postgres tables
-
+    // TODO: Reject queries we know we can't handle (i.e. have ORDER BY clause, etc.)
     if (query->jointree != NULL && list_length(query->jointree->fromlist) > 0)
     {
         for (joinCell = list_head(query->jointree->fromlist);
@@ -199,10 +244,45 @@ bool IsTargetListMatch(List *rtable, List *targetList, List *matViewTargetList,
                 matViewRtable);
     }
 
-    elog(LOG, "Found match for TargetList? %s",
-    isMatch ? "true" : "false");
+//    elog(LOG, "Found match for TargetList? %s",
+//    isMatch ? "true" : "false");
 
     return isMatch;
+}
+
+/*
+ * Determine whether or not the targetList from the target Query is a subset
+ *  of the targetList from another query.
+ *
+ *  NOTE: The only difference between this and IsTargetListMatch is that
+ *   IsTargetListMatch will also accept a TargetEntry as a match if that
+ *   TargetEntry's RTE is not present in the other Query's rtable, while
+ *   IsTargetListSubset will return false in the same case.
+ *
+ *  returns: true if targetList is a subset of otherTargetList.
+ */
+bool IsTargetListSubset(List *rtable, List *targetList, List *otherTargetList,
+    List *otherRtable)
+{
+    bool isSubset;
+    ListCell *targetEntryCell;
+    TargetEntry *targetEntry;
+
+    elog(LOG, "IsTargetListSubset called");
+    isSubset = true;
+
+    for (targetEntryCell = list_head(targetList);
+        isSubset && targetEntryCell != NULL;
+        targetEntryCell = targetEntryCell->next)
+    {
+        targetEntry = lfirst_node(TargetEntry, targetEntryCell);
+        isSubset = IsExprMatch(targetEntry->expr, rtable, otherTargetList,
+            otherRtable);
+    }
+
+    elog(LOG, "IsTargetListSubset: %s", isSubset ? "true" : "false");
+
+    return isSubset;
 }
 
 bool IsExprRTEInMatView(Expr *expr, List *queryRtable, List *matViewRtable)
@@ -216,9 +296,9 @@ bool IsExprRTEInMatView(Expr *expr, List *queryRtable, List *matViewRtable)
             Var *var = (Var *) expr;
             RangeTblEntry *varRte = rt_fetch(var->varno, queryRtable);
             isInMatView = FindRte(varRte->relid, matViewRtable) != NULL;
-            elog(LOG, "IsExprRTEInMatView: Found Var=%s.%s. RTE in MatView? %s",
-            varRte->eref->aliasname, get_colname(varRte, var),
-            isInMatView ? "true" : "false");
+//            elog(LOG, "IsExprRTEInMatView: Found Var=%s.%s. RTE in MatView? %s",
+//            varRte->eref->aliasname, get_colname(varRte, var),
+//            isInMatView ? "true" : "false");
             break;
         }
         case T_Aggref:
@@ -467,7 +547,7 @@ bool AreQualsMatch(List *matViewTargetList, List *matViewRtable, List *quals,
 
                     if (list_length(opExpr) > 0)
                     {
-                        elog(LOG, "AreQualsMatch: checking qualifiers...");
+//                        elog(LOG, "AreQualsMatch: checking qualifiers...");
                         for (argCell = list_head(opExpr->args);
                             argCell != NULL && isMatch; argCell = argCell->next)
                         {
@@ -495,6 +575,50 @@ bool AreQualsMatch(List *matViewTargetList, List *matViewRtable, List *quals,
     return isMatch;
 }
 
+/*
+ * Determine if two lists of Query qualifiers are equal.
+ */
+bool AreQualsEqual(List *targetQuals, List *targetRtable, List *otherQuals,
+    List *otherRtable)
+{
+    ListCell *targetQualCell, *otherQualCell;
+    bool foundMatch = false;
+    bool isMatch = list_length(targetQuals) == list_length(otherQuals);
+
+    if (isMatch)
+    {
+        for (targetQualCell = list_head(targetQuals);
+            targetQualCell != NULL && isMatch;
+            targetQualCell = targetQualCell->next)
+        {
+            foundMatch = false;
+
+            for (otherQualCell = list_head(otherQuals);
+                otherQualCell != NULL && !foundMatch; otherQualCell =
+                    otherQualCell->next)
+            {
+                foundMatch = AreExprsEqual((Expr *) lfirst(targetQualCell),
+                    targetRtable, (Expr *) lfirst(otherQualCell), otherRtable);
+            }
+
+            isMatch = foundMatch;
+        }
+    }
+
+    elog(LOG, "AreQualsEqual: found match? %s",
+    isMatch ? "true": "false");
+
+    return isMatch;
+}
+
+/*
+ * Determine whether or not a Query's GROUP BY clause is a match for a
+ *  MatView's GROUP BY clause.
+ *
+ *  A Query's GROUP BY clause is a match for a MatView's GROUP BY clause
+ *   if both clauses are exactly the same, e.g. they both group on the same
+ *   TargetEntries.
+ */
 bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
     List *queryRtable, List *matViewGroupClause, List *matViewTargetList,
     List *matViewRtable)
@@ -536,6 +660,43 @@ bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
     {
         switch (nodeTag(exprOne))
         {
+            case T_OpExpr:
+            {
+                OpExpr *opExprOne = (OpExpr *) exprOne;
+                OpExpr *opExprTwo = (OpExpr *) exprTwo;
+
+                if (opExprOne->opno == opExprTwo->opno
+                    && list_length(opExprOne->args)
+                        == list_length(opExprTwo->args))
+                {
+                    if (list_length(opExprOne->args) == 2)
+                    {
+                        equal = AreExprsEqual(linitial(opExprOne->args),
+                            rtableOne, linitial(opExprTwo->args), rtableTwo)
+                            && AreExprsEqual(lsecond(opExprOne->args),
+                                rtableOne, lsecond(opExprTwo->args), rtableTwo);
+
+                        // Commutative operation, so we need to check if one
+                        //  OpExpr is the reverse of the other
+                        if (!equal && opExprOne->opno == EQ_OID)
+                        {
+                            equal = AreExprsEqual(linitial(opExprOne->args),
+                                rtableOne, lsecond(opExprTwo->args), rtableTwo)
+                                && AreExprsEqual(lsecond(opExprOne->args),
+                                    rtableOne, linitial(opExprTwo->args),
+                                    rtableTwo);
+                        }
+                    }
+                    // Only one arg in each OpExpr
+                    else
+                    {
+                        equal = AreExprsEqual(linitial(opExprOne->args),
+                            rtableOne, linitial(opExprTwo->args), rtableTwo);
+                    }
+                }
+
+                break;
+            }
             case T_Var:
             {
                 Var *varOne = (Var *) exprOne;
@@ -544,19 +705,19 @@ bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
                 RangeTblEntry *varRteTwo = rt_fetch(varTwo->varno, rtableTwo);
                 equal = varRteOne->relid == varRteTwo->relid
                     && varOne->varattno == varTwo->varattno;
-                if (equal)
-                {
-                    elog(LOG, "AreExprsEqual: found match for %s.%s == %s.%s",
-                    varRteOne->eref->aliasname, get_colname(varRteOne, varOne),
-                    varRteTwo->eref->aliasname, get_colname(varRteTwo, varTwo));
-                }
-                else
-                {
-                    elog(
-                        LOG, "AreExprsEqual: did not find match for %s.%s and %s.%s",
-                        varRteOne->eref->aliasname, get_colname(varRteOne, varOne),
-                        varRteTwo->eref->aliasname, get_colname(varRteTwo, varTwo));
-                }
+//                if (equal)
+//                {
+//                    elog(LOG, "AreExprsEqual: found match for %s.%s == %s.%s",
+//                    varRteOne->eref->aliasname, get_colname(varRteOne, varOne),
+//                    varRteTwo->eref->aliasname, get_colname(varRteTwo, varTwo));
+//                }
+//                else
+//                {
+//                    elog(
+//                        LOG, "AreExprsEqual: did not find match for %s.%s and %s.%s",
+//                        varRteOne->eref->aliasname, get_colname(varRteOne, varOne),
+//                        varRteTwo->eref->aliasname, get_colname(varRteTwo, varTwo));
+//                }
                 break;
             }
             case T_Aggref:

@@ -81,7 +81,7 @@ static void CreateRelevantMatViews();
 static void PopulateMatViewRenamedRTable(MatView *matView);
 static List *GetCostlyQueries(double costCutoffRatio);
 static List *GenerateInterestingQueries(List *queryPlanStats);
-static List *PruneQueries(List *queries);
+static List *PruneQueries(List *queryPlans);
 
 void InitializeAutomatviewModule()
 {
@@ -317,7 +317,7 @@ int64 CreateMaterializedView(char *viewName, char *selectQuery)
 
 void CreateRelevantMatViews()
 {
-    List *matViewQueries;
+    List *matViewQueries, *prunedQueries;
     List *costlyQueryPlanStats;
     ListCell *queryCell;
     Query *query;
@@ -325,16 +325,29 @@ void CreateRelevantMatViews()
 
     costlyQueryPlanStats = GetCostlyQueries(0.1);
     matViewQueries = GenerateInterestingQueries(costlyQueryPlanStats);
-    matViewQueries = PruneQueries(matViewQueries);
 
-    foreach(queryCell, matViewQueries)
+    if (list_length(matViewQueries) > 0)
     {
-        query = lfirst_node(Query, queryCell);
-        // We don't want the WHERE clause included in created materialized views
-        newMatView = UnparseQuery(query, false);
-        PopulateMatViewRenamedRTable(newMatView);
-        CreateMaterializedView(newMatView->name, newMatView->selectQuery);
-        createdMatViews = list_append_unique(createdMatViews, newMatView);
+        prunedQueries = PruneQueries(matViewQueries);
+        pfree(matViewQueries);
+        matViewQueries = NIL;
+
+        if (list_length(prunedQueries) > 0)
+        {
+            foreach(queryCell, prunedQueries)
+            {
+                query = lfirst_node(Query, queryCell);
+                // We don't want the WHERE clause included in created materialized views
+                newMatView = UnparseQuery(query, false);
+                PopulateMatViewRenamedRTable(newMatView);
+                CreateMaterializedView(newMatView->name,
+                    newMatView->selectQuery);
+                createdMatViews = list_append_unique(createdMatViews,
+                    newMatView);
+            }
+
+            pfree(prunedQueries);
+        }
     }
 
     elog(LOG, "Created %d materialized views based on given query workload",
@@ -437,7 +450,7 @@ List *GetCostlyQueries(double costCutoffRatio)
  * Generates a set of interesting Query trees to be used to generate materialized views.
  *
  * param queryPlanStats: List (of QueryPlanStats)
- * returns: List (of Query)
+ * returns: List (of QueryPlanStats)
  */
 List *GenerateInterestingQueries(List *queryPlanStats)
 {
@@ -460,14 +473,51 @@ List *GenerateInterestingQueries(List *queryPlanStats)
 /**
  * Prunes less useful queries from a list of queries.
  *
- * param queries: List (of Query)
+ * param queryPlans: List (of Query)
  * returns: List (of Query)
  */
-List *PruneQueries(List *queries)
+List *PruneQueries(List *queryPlans)
 {
-// TODO: actually prune queries
-// TODO: remove duplicates
-    return queries;
+    ListCell *targetQueryCell, *otherQueryCell;
+    QueryPlanStats *targetQuery, *otherQuery;
+    bool doAddQuery;
+    List *prunedQueries = NIL;
+
+    if (list_length(queryPlans) > 1)
+    {
+        foreach(targetQueryCell, queryPlans)
+        {
+            doAddQuery = true;
+            targetQuery = (QueryPlanStats *) lfirst(targetQueryCell);
+
+            for (otherQueryCell = lnext(list_head(queryPlans));
+                otherQueryCell != NULL && doAddQuery; otherQueryCell =
+                    otherQueryCell->next)
+            {
+                otherQuery = (QueryPlanStats *) lfirst(otherQueryCell);
+
+                if (targetQuery != otherQuery)
+                {
+                    doAddQuery = !IsQuerySubsetOfOtherQuery(targetQuery,
+                        otherQuery, false);
+                }
+            }
+            if (doAddQuery)
+            {
+                prunedQueries = lappend(prunedQueries, targetQuery);
+            }
+            else
+            {
+                elog(LOG, "PruneQueries: pruned a query");
+            }
+        }
+    }
+    else
+    {
+        prunedQueries = lappend(prunedQueries, linitial(queryPlans));
+    }
+
+    return prunedQueries;
 }
 
 bool IsAutomatviewReady()

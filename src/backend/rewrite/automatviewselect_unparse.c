@@ -279,17 +279,17 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
                 joinRte = rt_fetch(joinExpr->rtindex, rootQuery->rtable);
                 leftRte = left_join_table(joinExpr, rootQuery->rtable);
                 rightRte = right_join_table(joinExpr, rootQuery->rtable);
-                elog(LOG, "Unparsed %s %s %s", leftRte->eref->aliasname,
-                joinTag, rightRte->eref->aliasname);
+//                elog(LOG, "Unparsed %s %s %s", leftRte->eref->aliasname,
+//                joinTag, rightRte->eref->aliasname);
                 qualStr = UnparseQuals(joinExpr->quals, rootQuery->rtable);
-                elog(LOG, "Unparsed qualifiers for %s %s %s",
-                leftRte->eref->aliasname,
-                joinTag, rightRte->eref->aliasname);
+//                elog(LOG, "Unparsed qualifiers for %s %s %s",
+//                leftRte->eref->aliasname,
+//                joinTag, rightRte->eref->aliasname);
 
 //                if (leftRte->rtekind == RTE_JOIN)
                 if (fromClause->len > 0)
                 {
-                    elog(LOG, "UnparseFromExprRecurs: leftRte is JOIN");
+//                    elog(LOG, "UnparseFromExprRecurs: leftRte is JOIN");
                     appendStringInfo(fromClause, " %s %s ON %s", joinTag,
                         rightRte->eref->aliasname, qualStr);
 //                    snprintf(joinBuf, QUERY_BUFFER_SIZE, " %s %s ON %s",
@@ -297,7 +297,7 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
                 }
                 else
                 {
-                    elog(LOG, "UnparseFromExprRecurs: leftRte is JOIN");
+//                    elog(LOG, "UnparseFromExprRecurs: leftRte is JOIN");
                     appendStringInfo(fromClause, " %s %s %s ON %s",
                         leftRte->eref->aliasname, joinTag,
                         rightRte->eref->aliasname, qualStr);
@@ -312,16 +312,16 @@ void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIndex,
 
 //                strncat(selectQuery, joinBuf, selectQuerySize);
             }
-            else
-            {
-                elog(LOG, "Found JoinExpr.rtindex == 0. Skipping...");
-            }
+//            else
+//            {
+//                elog(LOG, "Found JoinExpr.rtindex == 0. Skipping...");
+//            }
         }
         else if (IsA(node, RangeTblRef))
         {
             RangeTblRef *rtRef = (RangeTblRef *) node;
-            elog(
-                LOG, "UnparseFromExprRecurs: RangeTblRef.rtindex=%d", rtRef->rtindex);
+//            elog(
+//                LOG, "UnparseFromExprRecurs: RangeTblRef.rtindex=%d", rtRef->rtindex);
             RangeTblEntry *rte = rt_fetch(rtRef->rtindex, rootQuery->rtable);
 
             if (fromClauseIndex < fromClauseLength - 1)
@@ -401,7 +401,7 @@ char *UnparseGroupClause(List *groupClause, List *targetList, List *rtable)
         groupClauseStr = NULL;
     }
 
-    elog(LOG, "Constructed GROUP BY clause: %s", groupClauseStr);
+//    elog(LOG, "Constructed GROUP BY clause: %s", groupClauseStr);
 
     return groupClauseStr;
 }
@@ -447,7 +447,7 @@ char *UnparseQuals(List *quals, List *rangeTables)
     size_t qualBufSize = TARGET_BUFFER_SIZE;
     char *qualBuf = NULL;
 
-    elog(LOG, "UnparseQuals called...");
+//    elog(LOG, "UnparseQuals called...");
 
     if (quals != NIL)
     {
@@ -521,7 +521,7 @@ char *AggrefToString(TargetEntry *aggrefEntry, List *rtable, bool renameAggref,
             targetStr);
     }
 
-    elog(LOG, "AggrefToString result: %s", aggrefStrBuf);
+//    elog(LOG, "AggrefToString result: %s", aggrefStrBuf);
 
     return renamedBuf;
 }
@@ -571,7 +571,7 @@ void ExprToString(Expr *expr, List *rangeTables, char *targetBuf,
 
                     snprintf(targetBuf, targetBufSize, "%s %s %s", leftVarStr,
                     // TODO: Figure out opno to string mapping
-                        opExpr->opno == 96 ? "=" : "UNKNOWN", rightVarStr);
+                        opExpr->opno == EQ_OID ? "=" : "UNKNOWN", rightVarStr);
                 }
                 else
                 {

@@ -22,6 +22,8 @@
 #define QUERY_BUFFER_SIZE 2048
 #define TARGET_BUFFER_SIZE 512
 
+#define EQ_OID 96
+
 #define left_join_table(joinExpr, rangeTables) \
     (rt_fetch(joinExpr->rtindex - 2, rangeTables))
 

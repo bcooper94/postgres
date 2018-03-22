@@ -23,7 +23,7 @@ char *RewriteQuery(Query *query, MatView *matView)
 {
     char *rewrittenQuery;
 
-    elog(LOG, "RewriteQuery called...");
+//    elog(LOG, "RewriteQuery called...");
 
     if (matView != NULL)
     {
@@ -79,8 +79,8 @@ void RewriteTargetList(Query *query, MatView *matView)
                 foundMatchingEntry = AreExprsEqual(queryTargetEntry->expr,
                     query->rtable, matViewTargetEntry->expr,
                     matView->baseQuery->rtable);
-                elog(LOG, "Found matching TargetEntry? %s",
-                foundMatchingEntry ? "true" : "false");
+//                elog(LOG, "Found matching TargetEntry? %s",
+//                foundMatchingEntry ? "true" : "false");
                 matViewTargetListIndex++;
             }
 
@@ -95,18 +95,18 @@ void RewriteTargetList(Query *query, MatView *matView)
                 if (IsA(matViewTargetEntry->expr, Var))
                 {
                     Var *var = (Var *) matViewTargetEntry->expr;
-                    elog(LOG, "Fetching replaced Var's RangeTblEntry...");
+//                    elog(LOG, "Fetching replaced Var's RangeTblEntry...");
                     RangeTblEntry *replacedRT = rt_fetch(var->varno,
                         query->rtable);
-                    if (replacedRT != NULL)
-                    {
-                        elog(LOG, "Replaced Var references RTE: %s, colname=%s",
-                        replacedRT->eref->aliasname,
-                        get_colname(replacedRT, var));
-                    }
+//                    if (replacedRT != NULL)
+//                    {
+//                        elog(LOG, "Replaced Var references RTE: %s, colname=%s",
+//                        replacedRT->eref->aliasname,
+//                        get_colname(replacedRT, var));
+//                    }
                 }
-                elog(LOG, "Found matching MatView TargetEntry for %s with: %s",
-                queryTargetEntry->resname, matViewTargetEntry->resname);
+//                elog(LOG, "Found matching MatView TargetEntry for %s with: %s",
+//                queryTargetEntry->resname, matViewTargetEntry->resname);
                 newTargetList = lappend(newTargetList, matViewTargetEntry);
             }
             else
@@ -122,12 +122,12 @@ void RewriteTargetList(Query *query, MatView *matView)
 
     list_free(query->targetList);
     query->targetList = newTargetList;
-    elog(
-        LOG, "Rewrote targetList. Length=%d", newTargetList != NIL ? newTargetList->length : 0);
+//    elog(
+//        LOG, "Rewrote targetList. Length=%d", newTargetList != NIL ? newTargetList->length : 0);
     char rewrittenBuf[QUERY_BUFFER_SIZE];
     MatView *mview = UnparseTargetList(query->targetList, query->rtable, false,
         rewrittenBuf, QUERY_BUFFER_SIZE);
-    elog(LOG, "Rewritten targetList=%s", rewrittenBuf);
+//    elog(LOG, "Rewritten targetList=%s", rewrittenBuf);
 }
 
 /**
@@ -171,7 +171,7 @@ void RewriteJoinTree(Query *query, MatView *matView)
             matViewRef->rtindex = query->rtable->length;
             query->jointree->fromlist = list_make1(matViewRef);
         }
-        elog(LOG, "Successfully rewrote Query join tree");
+//        elog(LOG, "Successfully rewrote Query join tree");
     }
 }
 
@@ -359,9 +359,9 @@ void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
             AttrNumber targetEntryIndex = 1;
 
             RangeTblEntry *matViewRte = rt_fetch(targetVarno, queryRtable);
-            elog(LOG, "RewriteVarReferences: found Var=%s.%s...",
-            rt_fetch(var->varno, queryRtable)->eref->aliasname,
-            get_colname(rt_fetch(var->varno, queryRtable), var));
+//            elog(LOG, "RewriteVarReferences: found Var=%s.%s...",
+//            rt_fetch(var->varno, queryRtable)->eref->aliasname,
+//            get_colname(rt_fetch(var->varno, queryRtable), var));
 
             // Rewrite the Var to reference the MatView if it is in the MatView's targetList
             foreach(matViewTECell, matViewTargetList)
@@ -370,13 +370,13 @@ void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
                 if (AreExprsEqual(target, queryRtable, matViewTE->expr,
                     matViewRtable))
                 {
-                    elog(
-                        LOG, "RewriteVarReferences: rewrote var=%s to reference MatView at varno=%d, varattno=%d",
-                        get_colname(rt_fetch(var->varno, queryRtable), var), targetVarno, targetEntryIndex);
+//                    elog(
+//                        LOG, "RewriteVarReferences: rewrote var=%s to reference MatView at varno=%d, varattno=%d",
+//                        get_colname(rt_fetch(var->varno, queryRtable), var), targetVarno, targetEntryIndex);
                     SetVarattno(var, targetEntryIndex);
                     SetVarno(var, targetVarno);
-                    elog(LOG, "RewriteVarReferences: rewritten var=%s.%s",
-                    matViewRte->eref->aliasname, get_colname(matViewRte, var));
+//                    elog(LOG, "RewriteVarReferences: rewritten var=%s.%s",
+//                    matViewRte->eref->aliasname, get_colname(matViewRte, var));
                 }
                 targetEntryIndex++;
             }
@@ -384,7 +384,7 @@ void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
         }
         case T_Aggref:
         {
-            elog(LOG, "RewriteVarReferences: found Aggref");
+//            elog(LOG, "RewriteVarReferences: found Aggref");
             Aggref *aggref = (Aggref *) target;
             ListCell *argCell;
 
@@ -400,7 +400,7 @@ void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
             break;
         }
         default:
-            elog(LOG, "RewriteVarReferences: Unrecognized Expr type");
+            elog(WARNING, "RewriteVarReferences: Unrecognized Expr type");
     }
 }
 
@@ -417,7 +417,7 @@ void RewriteGroupByClause(Query *query, MatView *matView)
      */
     if (query->groupClause != NIL && matView->baseQuery != NIL)
     {
-        elog(LOG, "RewriteGroupByClause: removing Query's GROUP clause");
+//        elog(LOG, "RewriteGroupByClause: removing Query's GROUP clause");
         query->groupClause = NIL;
     }
 }
@@ -472,15 +472,15 @@ bool DoesMatViewContainRTE(RangeTblEntry *rte, MatView *matView)
         containsRte = rte->relid == matViewRte->relid;
     }
 
-    if (containsRte)
-    {
-        elog(LOG, "MatView contains RTE=%s: %s",
-        rte->eref->aliasname, matViewRte->eref->aliasname);
-    }
-    else
-    {
-        elog(LOG, "MatView does NOT contain RTE=%s", rte->eref->aliasname);
-    }
+//    if (containsRte)
+//    {
+//        elog(LOG, "MatView contains RTE=%s: %s",
+//        rte->eref->aliasname, matViewRte->eref->aliasname);
+//    }
+//    else
+//    {
+//        elog(LOG, "MatView does NOT contain RTE=%s", rte->eref->aliasname);
+//    }
 
     return containsRte;
 }

@@ -25,6 +25,9 @@ extern bool IsQueryForUserTables(Query *query);
 
 extern bool DoesQueryMatchMatView(Query *query, Query *matViewQuery);
 
+extern bool IsQuerySubsetOfOtherQuery(Query *targetQuery, Query *otherQuery,
+    bool includeWhereClause);
+
 extern bool CanQueryBeOptimized(Query *query);
 
 extern bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
