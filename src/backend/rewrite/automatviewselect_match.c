@@ -20,6 +20,8 @@ static List *userTables = NIL;
 
 static bool IsUserTable(Oid relid);
 
+static bool DoesRTableHaveSubqueries(List *rtable);
+
 static bool IsTargetListMatch(List *rtable, List *targetList,
     List *matViewTargetList, List *matViewRtable);
 
@@ -202,9 +204,22 @@ bool CanQueryBeOptimized(Query *query)
 {
     ListCell *joinCell;
     bool hasJoins = false;
+    bool systemCanHandleQuery = !query->hasDistinctOn && !query->hasRecursive
+        && !query->hasModifyingCTE && !query->hasRecursive
+        && !query->hasWindowFuncs && query->limitCount == NULL
+        && query->limitOffset == NULL && query->setOperations == NULL
+        && query->onConflict == NULL && list_length(query->sortClause) == 0
+        && list_length(query->distinctClause) == 0
+        && list_length(query->cteList) == 0
+        && list_length(query->groupingSets) == 0
+        && list_length(query->returningList) == 0
+        && !DoesRTableHaveSubqueries(query->rtable);
 
-    // TODO: Reject queries we know we can't handle (i.e. have ORDER BY clause, etc.)
-    if (query->jointree != NULL && list_length(query->jointree->fromlist) > 0)
+    elog(LOG, "CanQueryBeOptimized: systemCanHandleQuery? %s",
+    systemCanHandleQuery ? "true": "false");
+
+    if (systemCanHandleQuery && query->jointree != NULL
+        && list_length(query->jointree->fromlist) > 0)
     {
         for (joinCell = list_head(query->jointree->fromlist);
             joinCell != NULL && !hasJoins; joinCell = joinCell->next)
@@ -213,7 +228,28 @@ bool CanQueryBeOptimized(Query *query)
         }
     }
 
-    return query->hasAggs || query->groupClause != NIL || hasJoins;
+    return systemCanHandleQuery
+        && (query->hasAggs || query->groupClause != NIL || hasJoins);
+}
+
+bool DoesRTableHaveSubqueries(List *rtable)
+{
+    ListCell *rteCell;
+    RangeTblEntry *rte;
+    bool hasSubqueries = false;
+
+    for (rteCell = list_head(rtable); rteCell != NULL && !hasSubqueries;
+        rteCell = rteCell->next)
+    {
+        rte = lfirst_node(RangeTblEntry, rteCell);
+
+        if (rte != NULL)
+        {
+            hasSubqueries = rte->rtekind == RTE_SUBQUERY;
+        }
+    }
+
+    return hasSubqueries;
 }
 
 /**

@@ -21,6 +21,7 @@
 #include "lib/dshash.h"
 #include "executor/spi.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/guc_tables.h"
 
 #ifdef PG_MODULE_MAGIC
@@ -29,6 +30,8 @@ PG_MODULE_MAGIC
 #endif
 
 #define MAX_QUERY_RETRY_COUNT 3
+#define TRAINING_SAMPLE_COUNT_CONFIG "automatview.training_sample_count"
+#define DEFAULT_TRAINING_SAMPLE_COUNT 10
 
 typedef struct OutstandingQuery
 {
@@ -54,9 +57,7 @@ static bool isCollectingQueries = true;
 
 static bool isAutomatviewsReady = false;
 
-// Have we loaded the trainingSampleCount from postgresql.conf?
-static bool isTrainingSampleCountLoaded = false;
-static int trainingSampleCount = 2;
+static int trainingSampleCount;
 
 // Internal state initialization functions
 static void PopulateUserTables();
@@ -96,6 +97,23 @@ void InitializeAutomatviewModule()
         }
 
         MemoryContext oldContext = SwitchToAutoMatViewContext();
+        char *trainingSampleCountVal = GetConfigOptionByName(
+            TRAINING_SAMPLE_COUNT_CONFIG, NULL, true);
+
+        if (trainingSampleCountVal != NULL)
+        {
+            trainingSampleCount = strtol(trainingSampleCountVal,
+                trainingSampleCountVal + strlen(trainingSampleCountVal), 10);
+            pfree(trainingSampleCountVal);
+        }
+        else
+        {
+            trainingSampleCount = DEFAULT_TRAINING_SAMPLE_COUNT;
+        }
+
+        elog(
+        LOG, "InitializeAutomatviewModule: set trainingSampleCount to %d",
+        trainingSampleCount);
         PopulateUserTables();
         MemoryContextSwitchTo(oldContext);
     }
@@ -476,7 +494,7 @@ List *GenerateInterestingQueries(List *queryPlanStats)
  * param queryPlans: List (of Query)
  * returns: List (of Query)
  */
-List *PruneQueries(List *queryPlans)
+List *PruneQueries(List *queryPlans) // TODO: Create test scripts for this
 {
     ListCell *targetQueryCell, *otherQueryCell;
     QueryPlanStats *targetQuery, *otherQuery;
