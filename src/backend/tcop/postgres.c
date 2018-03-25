@@ -1089,6 +1089,7 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 					char *newQuery = RewriteQuery(queryCopy, matView);
 					char *copiedQuery = MemoryContextStrdup(oldcontext, newQuery);
 					pfree(newQuery);
+					elog(INFO, "Rewritten query: %s", newQuery);
 
 					//				elog(LOG, "Switching back to old context...");
 					MemoryContextSwitchTo(oldcontext);

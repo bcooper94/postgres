@@ -264,7 +264,6 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
                 CopyRte(leftRte, llast(rootQuery->rtable));
                 leftRte->rtekind = oldRTEKind;
             }
-            // TODO: Handle the case when a the MatView is in the middle of multiple join statements
             //  e.g. it is one JoinExpr's leftJoin and the next JoinExpr's rightJoin
             else if (containsRightRte)
             {

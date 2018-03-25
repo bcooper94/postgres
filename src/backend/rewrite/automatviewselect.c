@@ -264,7 +264,6 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
         queryPlanStatsList = lappend(queryPlanStatsList,
             CreateQueryPlanStats(query, plannedStatement));
 
-        // TODO: Set training threshold from postgres properties file
         if (queryPlanStatsList->length >= trainingSampleCount)
         {
             isCollectingQueries = false;
@@ -314,6 +313,7 @@ int64 CreateMaterializedView(char *viewName, char *selectQuery)
 
     sprintf(resultQuery, "CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS %s;",
         viewName, selectQuery);
+    elog(LOG, "CreateMaterializedView: %s", resultQuery);
 
     SPI_connect();
     ret = SPI_exec(resultQuery, 0);
@@ -347,8 +347,7 @@ void CreateRelevantMatViews()
     if (list_length(matViewQueries) > 0)
     {
         prunedQueries = PruneQueries(matViewQueries);
-        pfree(matViewQueries);
-        matViewQueries = NIL;
+        elog(INFO, "Pruned to %d MatViews", list_length(prunedQueries));
 
         if (list_length(prunedQueries) > 0)
         {
@@ -364,7 +363,7 @@ void CreateRelevantMatViews()
                     newMatView);
             }
 
-            pfree(prunedQueries);
+            list_free(prunedQueries);
         }
     }
 
@@ -497,45 +496,61 @@ List *GenerateInterestingQueries(List *queryPlanStats)
 List *PruneQueries(List *queryPlans) // TODO: Create test scripts for this
 {
     ListCell *targetQueryCell, *otherQueryCell;
-    QueryPlanStats *targetQuery, *otherQuery;
+    Query *targetQuery, *otherQuery;
     bool doAddQuery;
+    bool doDeleteTargetQuery;
+    int queriesPruned;
     List *prunedQueries = NIL;
 
     if (list_length(queryPlans) > 1)
     {
-        foreach(targetQueryCell, queryPlans)
+        do
         {
-            doAddQuery = true;
-            targetQuery = (QueryPlanStats *) lfirst(targetQueryCell);
+            queriesPruned = 0;
+            targetQueryCell = list_head(queryPlans);
 
-            for (otherQueryCell = lnext(list_head(queryPlans));
-                otherQueryCell != NULL && doAddQuery; otherQueryCell =
-                    otherQueryCell->next)
+            while (targetQueryCell != NULL)
             {
-                otherQuery = (QueryPlanStats *) lfirst(otherQueryCell);
+                doDeleteTargetQuery = false;
+                targetQuery = (Query *) lfirst(targetQueryCell);
 
-                if (targetQuery != otherQuery)
+                for (otherQueryCell = list_head(queryPlans);
+                     otherQueryCell != NULL;
+                     otherQueryCell = otherQueryCell->next)
                 {
-                    doAddQuery = !IsQuerySubsetOfOtherQuery(targetQuery,
-                        otherQuery, false);
+                    otherQuery = (Query *) lfirst(otherQueryCell);
+
+                    if (targetQuery != otherQuery && IsQuerySubsetOfOtherQuery(targetQuery,
+                        otherQuery, false))
+                    {
+                        MatView *toDelete = UnparseQuery(targetQuery, false);
+                        elog(LOG, "PruneQueries: breaking out of inner loop to prune query=%s",
+                            toDelete->selectQuery);
+                        FreeMatView(toDelete);
+                        doDeleteTargetQuery = true;
+                        queriesPruned++;
+                        break;
+                    }
+                }
+
+                targetQueryCell = lnext(targetQueryCell);
+                if (doDeleteTargetQuery)
+                {
+                    elog(LOG, "PruneQueries: pruning target Query %p",
+                        targetQuery);
+                    list_delete(queryPlans, targetQuery);
                 }
             }
-            if (doAddQuery)
-            {
-                prunedQueries = lappend(prunedQueries, targetQuery);
-            }
-            else
-            {
-                elog(LOG, "PruneQueries: pruned a query");
-            }
-        }
-    }
-    else
-    {
-        prunedQueries = lappend(prunedQueries, linitial(queryPlans));
+
+            elog(LOG, "PruneQueries: pruned %d queries in one iteration",
+                queriesPruned);
+        } while (queriesPruned > 0);
     }
 
-    return prunedQueries;
+    elog(LOG, "PruneQueries: pruned down to %d queries",
+        list_length(queryPlans));
+
+    return queryPlans;
 }
 
 bool IsAutomatviewReady()

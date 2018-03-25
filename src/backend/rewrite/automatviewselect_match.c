@@ -103,9 +103,9 @@ bool IsQueryForUserTables(Query *query)
             rteCell != NULL && isForUserTables; rteCell = rteCell->next)
         {
             rte = lfirst_node(RangeTblEntry, rteCell);
-            elog(
-            LOG, "IsQueryForUserTables: checking RTE=%s, relid=%d, rtekind=%d",
-            rte->eref->aliasname, rte->relid, rte->rtekind);
+//            elog(
+//            LOG, "IsQueryForUserTables: checking RTE=%s, relid=%d, rtekind=%d",
+//            rte->eref->aliasname, rte->relid, rte->rtekind);
             isForUserTables = rte->rtekind != RTE_RELATION
                 || IsUserTable(rte->relid);
         }
@@ -300,12 +300,9 @@ bool IsTargetListMatch(List *rtable, List *targetList, List *matViewTargetList,
 bool IsTargetListSubset(List *rtable, List *targetList, List *otherTargetList,
     List *otherRtable)
 {
-    bool isSubset;
     ListCell *targetEntryCell;
     TargetEntry *targetEntry;
-
-    elog(LOG, "IsTargetListSubset called");
-    isSubset = true;
+    bool isSubset = true;
 
     for (targetEntryCell = list_head(targetList);
         isSubset && targetEntryCell != NULL;
@@ -381,8 +378,6 @@ bool IsExprMatch(Expr *expr, List *queryRtable, List *matViewTargetList,
             viewTargetEntryCell->next)
     {
         viewTargetEntry = lfirst_node(TargetEntry, viewTargetEntryCell);
-        // TODO: Should we only compare non-join tables?
-
         isExprMatch = AreExprsEqual(expr, queryRtable, viewTargetEntry->expr,
             matViewRtable);
     }
@@ -507,27 +502,26 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
                 {
                     leftRte = rt_fetch(joinExpr->rtindex - 3,
                         rootQuery->rtable);
-                    elog(
-                        LOG, "IsFromClauseMatchRecurs: leftRte is an RTE_JOIN. New leftRte=%s",
-                        leftRte->eref->aliasname);
+//                    elog(
+//                        LOG, "IsFromClauseMatchRecurs: leftRte is an RTE_JOIN. New leftRte=%s",
+//                        leftRte->eref->aliasname);
                 }
                 rightRte = right_join_table(joinExpr, rootQuery->rtable);
-                // TODO: Ensure this and AreQualsMatch is correct
                 isMatch = isMatch
                     && AreQualsMatch(matViewTargetList, matViewRtable,
                         joinExpr->quals, rootQuery->rtable);
-                if (isMatch)
-                {
-                    elog(
-                        LOG, "IsFromClauseMatchRecurs: found match for %s %s %s",
-                        leftRte->eref->aliasname, joinTag, rightRte->eref->aliasname);
-                }
-                else
-                {
-                    elog(
-                        LOG, "IsFromClauseMatchRecurs: no match found for %s %s %s",
-                        leftRte->eref->aliasname, joinTag, rightRte->eref->aliasname);
-                }
+//                if (isMatch)
+//                {
+//                    elog(
+//                        LOG, "IsFromClauseMatchRecurs: found match for %s %s %s",
+//                        leftRte->eref->aliasname, joinTag, rightRte->eref->aliasname);
+//                }
+//                else
+//                {
+//                    elog(
+//                        LOG, "IsFromClauseMatchRecurs: no match found for %s %s %s",
+//                        leftRte->eref->aliasname, joinTag, rightRte->eref->aliasname);
+//                }
             }
         }
         else if (IsA(queryNode, RangeTblRef))
