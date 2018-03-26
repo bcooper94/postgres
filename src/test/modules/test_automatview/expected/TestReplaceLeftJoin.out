@@ -1,0 +1,2 @@
+1
+SELECT Matview.employee_person_id AS Matview_employee_person_id, Matview.person_name AS Matview_person_name, Matview.person_age AS Matview_person_age, manager.id AS manager_id FROM Matview INNER JOIN manager ON Matview.employee_id = manager.employee_id
