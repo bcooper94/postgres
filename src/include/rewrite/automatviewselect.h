@@ -19,6 +19,8 @@
 
 extern void InitializeAutomatviewModule();
 
+extern int GetTrainingSampleCount();
+
 extern bool ExecuteFirstOutstandingQuery();
 
 extern MemoryContext SwitchToAutoMatViewContext();

@@ -57,8 +57,6 @@ static bool isCollectingQueries = true;
 
 static bool isAutomatviewsReady = false;
 
-static int trainingSampleCount;
-
 // Internal state initialization functions
 static void PopulateUserTables();
 static void HandlePopulateUserTables(SPITupleTable *tuptable,
@@ -97,26 +95,26 @@ void InitializeAutomatviewModule()
         }
 
         MemoryContext oldContext = SwitchToAutoMatViewContext();
-        char *trainingSampleCountVal = GetConfigOptionByName(
-            TRAINING_SAMPLE_COUNT_CONFIG, NULL, true);
-
-        if (trainingSampleCountVal != NULL)
-        {
-            trainingSampleCount = strtol(trainingSampleCountVal,
-                trainingSampleCountVal + strlen(trainingSampleCountVal), 10);
-            pfree(trainingSampleCountVal);
-        }
-        else
-        {
-            trainingSampleCount = DEFAULT_TRAINING_SAMPLE_COUNT;
-        }
-
-        elog(
-        LOG, "InitializeAutomatviewModule: set trainingSampleCount to %d",
-        trainingSampleCount);
         PopulateUserTables();
         MemoryContextSwitchTo(oldContext);
     }
+}
+
+int GetTrainingSampleCount()
+{
+    int trainingSampleCount = DEFAULT_TRAINING_SAMPLE_COUNT;
+    char *trainingSampleCountVal = GetConfigOptionByName(
+        TRAINING_SAMPLE_COUNT_CONFIG, NULL, true);
+
+    if (trainingSampleCountVal != NULL)
+    {
+        trainingSampleCount = strtol(trainingSampleCountVal,
+                                     trainingSampleCountVal + strlen(trainingSampleCountVal), 10);
+        pfree(trainingSampleCountVal);
+        elog(LOG, "GetTrainingSampleCount: sampleCount=%d", trainingSampleCount);
+    }
+
+    return trainingSampleCount;
 }
 
 /*
@@ -264,7 +262,7 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
         queryPlanStatsList = lappend(queryPlanStatsList,
             CreateQueryPlanStats(query, plannedStatement));
 
-        if (queryPlanStatsList->length >= trainingSampleCount)
+        if (queryPlanStatsList->length >= GetTrainingSampleCount())
         {
             isCollectingQueries = false;
             CreateRelevantMatViews();
@@ -477,7 +475,6 @@ List *GenerateInterestingQueries(List *queryPlanStats)
 
     interestingQueries = NIL;
 
-// TODO: generate only interesting MatViews
     foreach(queryStatsCell, queryPlanStats)
     {
         stats = (QueryPlanStats *) lfirst(queryStatsCell);

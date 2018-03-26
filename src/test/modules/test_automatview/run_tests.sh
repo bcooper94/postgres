@@ -3,6 +3,7 @@ TEST_DB="test_db"
 TEST_DIR="test_queries"
 EXPECTED_DIR="expected"
 PG_DATA_FILE="../../../../../pg_data"
+NULL="null"
 
 runTestQueries() {
     if [ -d "$TEST_DIR" ]
@@ -10,7 +11,6 @@ runTestQueries() {
             startPostgres
 
             for queryFile in $TEST_DIR/*.sql; do
-                echo "Found queryFile: $queryFile"
                 fileName=$(cut -d "/" -f 2 <<< "$queryFile")
                 testFileName="$(cut -d "." -f 1 <<< "$fileName").out"
                 testFilePath="$EXPECTED_DIR/$testFileName"
@@ -20,6 +20,10 @@ runTestQueries() {
                         echo "runTestQueries getting test file from $testFilePath"
                         expectedMatViewCount=$(head -n 1 "$testFilePath")
                         expectedQuery=$(tail -n 1 "$testFilePath")
+                        if [ "$expectedQuery" == "$NULL" ] # tail won't pick up a blank line
+                            then
+                                expectedQuery=""
+                        fi
                         runTest "$queryFile" "$expectedMatViewCount" "$expectedQuery"
                         restartPostgres
                     else echo "runTestQueries couldn't find expected test file: $testFilePath"
@@ -32,35 +36,40 @@ runTestQueries() {
 }
 
 startPostgres() {
-    echo "Starting postgres..."
     ../../../../../pgsql/bin/pg_ctl start -D "$PG_DATA_FILE" &> /dev/null
+
+    if [ $? != 0 ]
+        then echo "Failed to start postgres. Exiting..."
+        exit 1
+    fi
 }
 
 restartPostgres() {
-    echo "Restarting postgres..."
     ../../../../../pgsql/bin/pg_ctl restart -D "$PG_DATA_FILE" &> /dev/null
+    if [ $? != 0 ]
+        then echo "Failed to restart postgres. Exiting..."
+        exit 1
+    fi
 }
 
 stopPostgres() {
-    echo "Stopping postgres"
     ../../../../../pgsql/bin/pg_ctl stop -D "$PG_DATA_FILE" &> /dev/null
+    if [ $? != 0 ]
+        then echo "Failed to stop postgres. Exiting..."
+        exit 1
+    fi
 }
 
 runTest() {
-    if [ -z "$1" && -z "$2" && -z "$3" ]
-        then
-            echo "usage: runTests sqlFile expectedMatViewCount expectedQuery"
-        else
-            sqlFile="$1"
-            expectedMatViewCount="$2"
-            expectedQuery="$3"
+    sqlFile="$1"
+    expectedMatViewCount="$2"
+    expectedQuery="$3"
 
-            echo "----- Running test for $sqlFile -----"
-            executeSqlFile "$sqlFile" "$TEST_DB"
-            isExpectedMatViewCount "$expectedMatViewCount"
-            isExpectedQuery "$expectedQuery"
-            echo "----- Finished Test -----"
-    fi
+    echo "----- Running test for $sqlFile -----"
+    executeSqlFile "$sqlFile" "$TEST_DB"
+    isExpectedMatViewCount "$expectedMatViewCount"
+    isExpectedQuery "$expectedQuery"
+    echo "----- Finished Testing $sqlFile -----"
 }
 
 executeSqlFile() {
@@ -100,13 +109,8 @@ isExpectedQuery() {
 }
 
 simplifyQueryMatViewName() {
-    if [ -z "$1" ]
-        then
-            echo "usage: simplifyQueryMatViewName query"
-        else
-            query=$1
-            echo $(sed -E "s/Matview_[0-9]+/Matview/g" <<< "$query")
-    fi
+    query=$1
+    echo $(sed -E "s/Matview_[0-9]+/Matview/g" <<< "$query")
 }
 
 checkExpected() {
@@ -114,9 +118,8 @@ checkExpected() {
     expected="$2"
     actual="$3"
 
-    if [ "$expected" == "$actual" ]
-        then echo "$testName passed"
-        else printf "$testName expected:\n$expected\nFound:\n$actual\n"
+    if [ "$expected" != "$actual" ]
+        then printf "ERROR: $testName expected:\n\"$expected\"\nFound:\n\"$actual\"\n"
     fi
 }
 
