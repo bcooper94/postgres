@@ -1,37 +1,26 @@
 OUTFILE="out.txt"
-TEST_DB="test_db"
+SETUP_DIR="setup"
 TEST_DIR="test_queries"
 EXPECTED_DIR="expected"
 PG_DATA_FILE="../../../../../pg_data"
 NULL="null"
 
-runTestQueries() {
-    if [ -d "$TEST_DIR" ]
+runTestSuite() {
+    if [ -d "$SETUP_DIR" ]
         then
             startPostgres
-
-            for queryFile in $TEST_DIR/*.sql; do
-                fileName=$(cut -d "/" -f 2 <<< "$queryFile")
-                testFileName="$(cut -d "." -f 1 <<< "$fileName").out"
-                testFilePath="$EXPECTED_DIR/$testFileName"
-
-                if [ -f "$testFilePath" ]
-                    then
-                        echo "runTestQueries getting test file from $testFilePath"
-                        expectedMatViewCount=$(head -n 1 "$testFilePath")
-                        expectedQuery=$(tail -n 1 "$testFilePath")
-                        if [ "$expectedQuery" == "$NULL" ] # tail won't pick up a blank line
-                            then
-                                expectedQuery=""
-                        fi
-                        runTest "$queryFile" "$expectedMatViewCount" "$expectedQuery"
-                        restartPostgres
-                    else echo "runTestQueries couldn't find expected test file: $testFilePath"
-                fi
+            for setupFile in $SETUP_DIR/*.sql; do
+                fileName=$(getFileNameFromPath "$setupFile")
+                database=$(getTargetDatabaseFromFileName "$fileName")
+                createDatabase "$database" "$setupFile"
+                runTestQueriesForDatabase "$database"
+                dropDatabase "$database"
+                restartPostgres
             done
-
             stopPostgres
-        else echo "runTestQueries couldn't find test directory: $TEST_DIR"
+        else
+            echo "Could not find database setup directory: $SETUP_DIR"
+            exit 1
     fi
 }
 
@@ -47,7 +36,8 @@ startPostgres() {
 restartPostgres() {
     ../../../../../pgsql/bin/pg_ctl restart -D "$PG_DATA_FILE" &> /dev/null
     if [ $? != 0 ]
-        then echo "Failed to restart postgres. Exiting..."
+        then echo "Failed to restart postgres. Stopping Postgres and exiting..."
+        stopPostgres
         exit 1
     fi
 }
@@ -60,15 +50,84 @@ stopPostgres() {
     fi
 }
 
+createDatabase() {
+    database="$1"
+    tableCreationScript="$2"
+    echo "Creating database: \"$database\" from script: \"$tableCreationScript\""
+    ../../../../../pgsql/bin/createdb "$1" &> /dev/null
+
+    if [ $? != 0 ]
+        then
+            echo "Failed to create database $database. Stopping Postgres and exiting..."
+            stopPostgres
+            exit 1
+    fi
+
+    executeSqlFile "$tableCreationScript" "$database"
+}
+
+dropDatabase() {
+    ../../../../../pgsql/bin/dropdb "$1" &> /dev/null
+
+    if [ $? != 0 ]
+        then echo "Failed to drop database $1. If this database exists, you will need to drop it manually."
+    fi
+}
+
+runTestQueriesForDatabase() {
+    if [ -d "$TEST_DIR" ]
+        then
+            database="$1"
+
+            for queryFile in $TEST_DIR/*.$database.sql; do
+                fileName=$(getFileNameFromPath "$queryFile")
+                testFileName="$(sed 's/\(.*\)\..*/\1/' <<< "$fileName").out"
+                testFilePath="$EXPECTED_DIR/$testFileName"
+
+                if [ -f "$testFilePath" ]
+                    then
+                        expectedMatViewCount=$(head -n 1 "$testFilePath")
+                        expectedQuery=$(tail -n 1 "$testFilePath")
+                        if [ "$expectedQuery" == "$NULL" ] # tail won't pick up a blank line
+                            then
+                                expectedQuery=""
+                        fi
+                        runTest "$database" "$queryFile" "$expectedMatViewCount" "$expectedQuery"
+                        restartPostgres
+                    else echo "runTestQueriesForDatabase couldn't find expected test file: $testFilePath"
+                fi
+            done
+        else echo "runTestQueriesForDatabase couldn't find test directory: $TEST_DIR"
+    fi
+}
+
+getFileNameFromPath() {
+    cut -d "/" -f 2 <<< "$1"
+}
+
+getTargetDatabaseFromFileName() {
+    cut -d "." -f 2 <<< "$1"
+}
+
+getExtensionFromFileName() {
+    cut -d "." -f 3 <<< "$1"
+}
+
 runTest() {
-    sqlFile="$1"
-    expectedMatViewCount="$2"
-    expectedQuery="$3"
+    database="$1"
+    sqlFile="$2"
+    expectedMatViewCount="$3"
+    expectedQuery="$4"
 
     echo "----- Running test for $sqlFile -----"
-    executeSqlFile "$sqlFile" "$TEST_DB"
+    executeSqlFile "$sqlFile" "$database"
     isExpectedMatViewCount "$expectedMatViewCount"
     isExpectedQuery "$expectedQuery"
+
+    if [ -f "$OUTFILE" ]
+        then rm "$OUTFILE"
+    fi
+
     echo "----- Finished Testing $sqlFile -----"
 }
 
@@ -77,6 +136,11 @@ executeSqlFile() {
     database=$2
     if [ -f "$sqlFile" ]
         then ../../../../../pgsql/bin/psql -f "$sqlFile" -d "$database" &> "$OUTFILE"
+            if [ $? != 0 ]
+                then
+                    echo "Failed to execute SQL file: $sqlFile. Exiting..."
+                    exit 1
+            fi
         else echo "Could not locate file: $sqlFile"
     fi
 }
@@ -123,4 +187,4 @@ checkExpected() {
     fi
 }
 
-runTestQueries
+runTestSuite
