@@ -1,2 +1,2 @@
 1
-SELECT person.name AS person_name, person.age AS person_age, Matview.employee_id AS Matview_employee_id, executive.id AS executive_id FROM person INNER JOIN Matview ON person.id = Matview.employee_person_id INNER JOIN executive ON Matview.manager_id = executive.manager_id
+SELECT person.name AS person_name, person.age AS person_age, Matview.employee_id AS Matview_employee_id, executive.id AS executive_id FROM  person INNER JOIN Matview ON person.id = Matview.employee_person_id INNER JOIN executive ON Matview.manager_id = executive.manager_id

@@ -7,7 +7,3 @@ select employee.id, person_id, employee_id from employee join manager on employe
 
 select name, age, employee.id, executive.id from person join employee on person.id = person_id
  join manager on employee.id = employee_id join executive on manager.id = manager_id;
- 
- /* Expect no match because manager is in the MatView, but manager.id is not in the MatView,
-  *  but is in the query's JOIN qualifiers.
-  */

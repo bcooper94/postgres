@@ -16,7 +16,8 @@ SUBDIRS = \
 		  test_rbtree \
 		  test_rls_hooks \
 		  test_shm_mq \
-		  worker_spi
+		  worker_spi \
+		  test_automatview
 
 all: submake-generated-headers
 
