@@ -1,0 +1,2 @@
+1
+SELECT Matview.lineitem_l_orderkey AS Matview_lineitem_l_orderkey, Matview.sum_lineitem_l_extendedprice AS Matview_sum_lineitem_l_extendedprice, Matview.orders_o_orderdate AS Matview_orders_o_orderdate, Matview.orders_o_shippriority AS Matview_orders_o_shippriority FROM Matview

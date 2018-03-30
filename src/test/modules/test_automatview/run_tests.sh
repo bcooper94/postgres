@@ -1,4 +1,4 @@
-OUTFILE="out.txt"
+OUTFILE="test_out"
 SETUP_DIR="setup"
 TEST_DIR="test_queries"
 EXPECTED_DIR="expected"
@@ -28,8 +28,9 @@ startPostgres() {
     ../../../../../pgsql/bin/pg_ctl start -D "$PG_DATA_FILE" &> /dev/null
 
     if [ $? != 0 ]
-        then echo "Failed to start postgres. Exiting..."
-        exit 1
+        then echo "Failed to start postgres. Attempting to stop existing Postgres process..."
+        stopPostgres
+        startPostgres
     fi
 }
 
@@ -59,8 +60,6 @@ createDatabase() {
     if [ $? != 0 ]
         then
             echo "Failed to create database $database. Stopping Postgres and exiting..."
-            stopPostgres
-            exit 1
     fi
 
     executeSqlFile "$tableCreationScript" "$database"
@@ -138,7 +137,8 @@ executeSqlFile() {
         then ../../../../../pgsql/bin/psql -f "$sqlFile" -d "$database" &> "$OUTFILE"
             if [ $? != 0 ]
                 then
-                    echo "Failed to execute SQL file: $sqlFile. Exiting..."
+                    echo "Failed to execute SQL file: $sqlFile. Stopping Postgres and exiting..."
+                    stopPostgres
                     exit 1
             fi
         else echo "Could not locate file: $sqlFile"

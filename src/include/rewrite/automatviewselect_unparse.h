@@ -33,6 +33,9 @@ extern void UnparseFromExprRecurs(Query *rootQuery, Node *node, int fromClauseIn
 extern char *UnparseGroupClause(List *groupClause, List *targetList,
     List *rtable);
 
+extern TargetEntry *FindTargetEntryForGroupStatement(SortGroupClause *sortGroupClause,
+    List *targetEntries);
+
 extern void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
     List *rangeTables, char *varStrBuf, size_t varStrBufSize);
 

@@ -1,0 +1,2 @@
+1
+SELECT Matview.customer_c_custkey AS Matview_customer_c_custkey, Matview.customer_c_name AS Matview_customer_c_name, Matview.sum_lineitem_l_extendedprice AS Matview_sum_lineitem_l_extendedprice, Matview.customer_c_acctbal AS Matview_customer_c_acctbal, Matview.nation_n_name AS Matview_nation_n_name, Matview.customer_c_address AS Matview_customer_c_address, Matview.customer_c_phone AS Matview_customer_c_phone, Matview.customer_c_comment AS Matview_customer_c_comment FROM Matview

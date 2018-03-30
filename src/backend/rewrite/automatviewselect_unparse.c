@@ -376,15 +376,14 @@ char *UnparseGroupClause(List *groupClause, List *targetList, List *rtable)
         foreach(groupCell, groupClause)
         {
             groupStmt = lfirst_node(SortGroupClause, groupCell);
-            targetEntry = (TargetEntry *) list_nth(targetList,
-                groupStmt->tleSortGroupRef - 1);
+            targetEntry = FindTargetEntryForGroupStatement(groupStmt, targetList);
             TargetEntryToString(targetEntry, rtable, false, targetBuffer,
-            TARGET_BUFFER_SIZE);
-            elog(
-                LOG, "Found SortGroupClause nodeTag=%d, sortGroupRef=%d, eqop=%d, sortop=%d, targetEntry=%s",
-                nodeTag(groupStmt), groupStmt->tleSortGroupRef,
-                groupStmt->eqop, groupStmt->sortop,
-                targetBuffer);
+                                TARGET_BUFFER_SIZE);
+            // elog(
+            //     LOG, "Found SortGroupClause nodeTag=%d, sortGroupRef=%d, eqop=%d, sortop=%d, targetEntry=%s",
+            //     nodeTag(groupStmt), groupStmt->tleSortGroupRef,
+            //     groupStmt->eqop, groupStmt->sortop,
+            //     targetBuffer);
 
             strncat(groupClauseStr, targetBuffer, TARGET_BUFFER_SIZE);
 
@@ -401,9 +400,32 @@ char *UnparseGroupClause(List *groupClause, List *targetList, List *rtable)
         groupClauseStr = NULL;
     }
 
-//    elog(LOG, "Constructed GROUP BY clause: %s", groupClauseStr);
+   elog(LOG, "Constructed GROUP BY clause: %s", groupClauseStr);
 
     return groupClauseStr;
+}
+
+TargetEntry *FindTargetEntryForGroupStatement(SortGroupClause *sortGroupClause,
+    List *targetList)
+{
+    ListCell *targetEntryCell;
+    TargetEntry *targetEntry;
+    TargetEntry *groupedTargetEntry = NULL;
+
+    for (targetEntryCell = list_head(targetList);
+         targetEntryCell != NULL && groupedTargetEntry == NULL;
+         targetEntryCell = targetEntryCell->next)
+    {
+        targetEntry = lfirst_node(TargetEntry, targetEntryCell);
+        if (targetEntry != NULL && targetEntry->ressortgroupref == sortGroupClause->tleSortGroupRef)
+        {
+            // elog(LOG, "FindTargetEntryForGroupStatement: found TE at attrnum=%d",
+            //      targetEntry->resno);
+            groupedTargetEntry = targetEntry;
+        }
+    }
+
+    return groupedTargetEntry;
 }
 
 void CreateJoinVarStr(JoinExpr *joinExpr, Var *var, RangeTblEntry *rte,
@@ -608,7 +630,7 @@ char *TargetEntryToString(TargetEntry *targetEntry, List *rtable,
             break;
         }
         case T_Aggref:
-            targetEntryRename = AggrefToString(targetEntry, rtable, true,
+            targetEntryRename = AggrefToString(targetEntry, rtable, renameTargets,
                 outBuf, outBufSize);
             break;
         default:

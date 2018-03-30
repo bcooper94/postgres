@@ -86,7 +86,6 @@ void InitializeAutomatviewModule()
 {
     if (!isAutomatviewsReady)
     {
-        elog(LOG, "Initializing Automatview module...");
         if (AutoMatViewContext == NULL)
         {
             AutoMatViewContext = AllocSetContextCreate((MemoryContext) NULL,
@@ -490,7 +489,7 @@ List *GenerateInterestingQueries(List *queryPlanStats)
  * param queryPlans: List (of Query)
  * returns: List (of Query)
  */
-List *PruneQueries(List *queryPlans) // TODO: Create test scripts for this
+List *PruneQueries(List *queryPlans)
 {
     ListCell *targetQueryCell, *otherQueryCell;
     Query *targetQuery, *otherQuery;
@@ -573,7 +572,6 @@ MatView *GetBestMatViewMatch(Query *query)
     {
         elog(LOG, "GetBestMatViewMatch: finding best matching view");
         matchingMatViews = GetMatchingMatViews(query);
-        // TODO: filter returned MatViews to find best match
 
         if (list_length(matchingMatViews) > 0)
         {
