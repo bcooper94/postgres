@@ -1,0 +1,2 @@
+1
+SELECT Matview.person_name AS Matview_person_name, Matview.person_age AS Matview_person_age FROM Matview
