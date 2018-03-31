@@ -54,7 +54,6 @@ void ClearUserTables()
 {
     if (userTables != NIL)
     {
-        elog(LOG, "Clearing user tables...");
         list_free(userTables);
         userTables = NIL;
     }
@@ -78,9 +77,6 @@ void AddUserTable(Oid relid, char *schema, char *tableName)
         userTable->schema = makeStringInfo();
         appendStringInfo(userTable->schema, schema);
         userTables = lappend(userTables, userTable);
-        elog(
-            LOG, "AddUserTable: adding %s.%s with relid=%d", userTable->schema->data,
-            userTable->tableName->data, userTable->relid);
     }
     else
     {
@@ -103,14 +99,9 @@ bool IsQueryForUserTables(Query *query)
              rteCell != NULL && isForUserTables; rteCell = rteCell->next)
         {
             rte = lfirst_node(RangeTblEntry, rteCell);
-            //            elog(
-            //            LOG, "IsQueryForUserTables: checking RTE=%s, relid=%d, rtekind=%d",
-            //            rte->eref->aliasname, rte->relid, rte->rtekind);
             isForUserTables = rte->rtekind != RTE_RELATION || IsUserTable(rte->relid);
         }
     }
-
-    //    elog(LOG, "IsQueryForUserTables? %s", isForUserTables ? "true" : "false");
 
     return isForUserTables;
 }
@@ -170,20 +161,25 @@ bool IsQuerySubsetOfOtherQuery(Query *targetQuery, Query *otherQuery,
                                bool includeWhereClause)
 {
     bool isSubset = IsTargetListSubset(targetQuery->rtable,
-                                       targetQuery->targetList, otherQuery->targetList, otherQuery->rtable) &&
+                                       targetQuery->targetList,
+                                       otherQuery->targetList,
+                                       otherQuery->rtable) &&
                     IsFromClauseMatch(targetQuery, otherQuery->targetList,
                                       otherQuery->rtable, otherQuery->jointree) &&
                     IsGroupByClauseMatch(targetQuery->groupClause,
-                                         targetQuery->targetList, targetQuery->rtable,
-                                         otherQuery->groupClause, otherQuery->targetList,
+                                         targetQuery->targetList,
+                                         targetQuery->rtable,
+                                         otherQuery->groupClause,
+                                         otherQuery->targetList,
                                          otherQuery->rtable);
 
     if (includeWhereClause && isSubset)
     {
-        isSubset = (targetQuery->jointree == NULL && otherQuery->jointree == NULL) || (targetQuery->jointree->quals == NULL && targetQuery->jointree->quals == NULL) || AreQualsEqual(targetQuery->jointree->quals, targetQuery->rtable, otherQuery->jointree->quals, otherQuery->rtable);
+        isSubset = (targetQuery->jointree == NULL && otherQuery->jointree == NULL)
+            || (targetQuery->jointree->quals == NULL && targetQuery->jointree->quals == NULL)
+            || AreQualsEqual(targetQuery->jointree->quals, targetQuery->rtable,
+            otherQuery->jointree->quals, otherQuery->rtable);
     }
-
-    elog(LOG, "IsQuerySubsetOfOtherQuery? %s", isSubset ? "true" : "false");
 
     return isSubset;
 }
@@ -198,10 +194,13 @@ bool CanQueryBeOptimized(Query *query)
 {
     ListCell *joinCell;
     bool hasJoins = false;
-    bool systemCanHandleQuery = !query->hasDistinctOn && !query->hasRecursive && !query->hasModifyingCTE && !query->hasRecursive && !query->hasWindowFuncs && query->limitCount == NULL && query->limitOffset == NULL && query->setOperations == NULL && query->onConflict == NULL && list_length(query->sortClause) == 0 && list_length(query->distinctClause) == 0 && list_length(query->cteList) == 0 && list_length(query->groupingSets) == 0 && list_length(query->returningList) == 0 && !DoesRTableHaveSubqueries(query->rtable);
-
-    elog(LOG, "CanQueryBeOptimized: systemCanHandleQuery? %s",
-         systemCanHandleQuery ? "true" : "false");
+    bool systemCanHandleQuery = !query->hasDistinctOn && !query->hasRecursive &&
+        !query->hasModifyingCTE && !query->hasRecursive && !query->hasWindowFuncs &&
+        query->limitCount == NULL && query->limitOffset == NULL &&
+        query->setOperations == NULL && query->onConflict == NULL &&
+        list_length(query->sortClause) == 0 && list_length(query->distinctClause) == 0 &&
+        list_length(query->cteList) == 0 && list_length(query->groupingSets) == 0 &&
+        list_length(query->returningList) == 0 && !DoesRTableHaveSubqueries(query->rtable);
 
     if (systemCanHandleQuery && query->jointree != NULL && list_length(query->jointree->fromlist) > 0)
     {
@@ -258,12 +257,9 @@ bool IsTargetListMatch(List *rtable, List *targetList, List *matViewTargetList,
          *  TargetEntry's originating RTE are present in the MatView's Query and the
          *  TargetEntry is present in the MatView's targetList.
          */
-        isMatch = FindRte(targetEntry->resorigtbl, matViewRtable) == NULL || IsExprMatch(targetEntry->expr, rtable, matViewTargetList,
-                                                                                         matViewRtable);
+        isMatch = FindRte(targetEntry->resorigtbl, matViewRtable) == NULL
+            || IsExprMatch(targetEntry->expr, rtable, matViewTargetList, matViewRtable);
     }
-
-    //    elog(LOG, "Found match for TargetList? %s",
-    //    isMatch ? "true" : "false");
 
     return isMatch;
 }
@@ -295,8 +291,6 @@ bool IsTargetListSubset(List *rtable, List *targetList, List *otherTargetList,
                                otherRtable);
     }
 
-    elog(LOG, "IsTargetListSubset: %s", isSubset ? "true" : "false");
-
     return isSubset;
 }
 
@@ -306,40 +300,37 @@ bool IsExprRTEInMatView(Expr *expr, List *queryRtable, List *matViewRtable)
 
     switch (nodeTag(expr))
     {
-    case T_Var:
-    {
-        Var *var = (Var *)expr;
-        RangeTblEntry *varRte = rt_fetch(var->varno, queryRtable);
-        isInMatView = FindRte(varRte->relid, matViewRtable) != NULL;
-        // elog(LOG, "IsExprRTEInMatView: Found Var=%s.%s. RTE in MatView? %s",
-        //      varRte->eref->aliasname, get_colname(varRte, var),
-        //      isInMatView ? "true" : "false");
-        break;
-    }
-    case T_Aggref:
-    {
-        ListCell *argCell;
-        Aggref *aggref = (Aggref *)expr;
+        case T_Var:
+        {
+            Var *var = (Var *)expr;
+            RangeTblEntry *varRte = rt_fetch(var->varno, queryRtable);
+            isInMatView = FindRte(varRte->relid, matViewRtable) != NULL;
+            break;
+        }
+        case T_Aggref:
+        {
+            ListCell *argCell;
+            Aggref *aggref = (Aggref *)expr;
 
-        if (list_length(aggref->args) > 0)
-        {
-            for (argCell = list_head(aggref->args);
-                 argCell != NULL && isInMatView; argCell = argCell->next)
+            if (list_length(aggref->args) > 0)
             {
-                isInMatView = IsExprRTEInMatView(lfirst_node(Expr, argCell),
-                                                 queryRtable, matViewRtable);
+                for (argCell = list_head(aggref->args);
+                    argCell != NULL && isInMatView; argCell = argCell->next)
+                {
+                    isInMatView = IsExprRTEInMatView(lfirst_node(Expr, argCell),
+                                                    queryRtable, matViewRtable);
+                }
             }
+            else
+            {
+                elog(WARNING, "IsExprRTEInMatView found Aggref with no args");
+                    isInMatView = false;
+            }
+            break;
         }
-        else
-        {
-            elog(ERROR, "IsExprRTEInMatView found Aggref with no args");
-            isInMatView = false;
-        }
-        break;
-    }
-    default:
-        elog(WARNING, "IsExprRTEInMatView found unsupported Expr type");
-        isInMatView = false;
+        default:
+            elog(WARNING, "IsExprRTEInMatView found unsupported Expr type");
+                isInMatView = false;
     }
 
     return isInMatView;
@@ -382,8 +373,7 @@ bool IsFromClauseMatch(Query *query, List *matViewTargetList,
 
     if (query->jointree == NULL && matViewJoinTree == NULL)
     {
-        elog(
-            LOG, "IsFromClauseMatch: both from clauses are NULL; considering them equal");
+        elog(LOG, "IsFromClauseMatch: both from clauses are NULL; considering them equal");
     }
     else if (query->jointree == NULL || matViewJoinTree == NULL)
     {
@@ -395,21 +385,13 @@ bool IsFromClauseMatch(Query *query, List *matViewTargetList,
         for (fromCell = list_head(from->fromlist); fromCell != NULL && isMatch;
              fromCell = fromCell->next)
         {
-            // NOTE: Mixed JOIN ON clauses with table cross products will cause this to fail
+            /*
+             * NOTE: Mixed JOIN ON clauses with table cross products
+             *  will cause this to fail
+             */
             isMatch = IsFromClauseMatchRecurs(query, lfirst(fromCell),
                                               matViewTargetList, matViewRtable);
         }
-    }
-
-    if (isMatch)
-    {
-        elog(
-            LOG, "IsFromClauseMatch: found match for MatView");
-    }
-    else
-    {
-        elog(
-            LOG, "IsFromClauseMatch: did NOT find match for MatView");
     }
 
     return isMatch;
@@ -425,44 +407,14 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
     {
         if (IsA(queryNode, JoinExpr))
         {
-            char *joinTag;
             JoinExpr *joinExpr = (JoinExpr *)queryNode;
-            switch (joinExpr->jointype)
-            {
-            case JOIN_ANTI:
-                joinTag = "ANTI JOIN";
-                break;
-            case JOIN_UNIQUE_INNER:
-                joinTag = "UNIQUE INNER JOIN";
-                break;
-            case JOIN_UNIQUE_OUTER:
-                joinTag = "UNIQUE OUTER JOIN";
-                break;
-            case JOIN_INNER:
-                joinTag = "INNER JOIN";
-                break;
-            case JOIN_FULL:
-                joinTag = "FULL JOIN";
-                break;
-            case JOIN_LEFT:
-                joinTag = "LEFT JOIN";
-                break;
-            case JOIN_RIGHT:
-                joinTag = "RIGHT JOIN";
-                break;
-            case JOIN_SEMI:
-                joinTag = "SEMI JOIN";
-                break;
-            default:
-                joinTag = "??? JOIN";
-                elog(WARNING, "Couldn't recognize given JoinType");
-            }
 
-            // Left and right RTE indices should be correct.
-            // See addRangeTableEntryForJoin in src/backend/parser/parse_relation.c:1858
-            //  for how RTEs and join RTEs are added to the Query's list of RTEs
+            /* Left and right RTE indices should be correct.
+             *  See addRangeTableEntryForJoin in src/backend/parser/parse_relation.c:1858
+             *  for how RTEs and join RTEs are added to the Query's list of RTEs
+             */
 
-            // NOTE: Un-parsing of mixed JOIN ON clauses with table cross products will fail
+            /* NOTE: Un-parsing of mixed JOIN ON clauses with table cross products will fail */
             if (IsA(joinExpr->larg, JoinExpr))
             {
                 isMatch = isMatch && IsFromClauseMatchRecurs(rootQuery, joinExpr->larg,
@@ -482,43 +434,21 @@ bool IsFromClauseMatchRecurs(Query *rootQuery, Node *queryNode,
                 {
                     leftRte = rt_fetch(joinExpr->rtindex - 3,
                                        rootQuery->rtable);
-                    //                    elog(
-                    //                        LOG, "IsFromClauseMatchRecurs: leftRte is an RTE_JOIN. New leftRte=%s",
-                    //                        leftRte->eref->aliasname);
                 }
                 rightRte = right_join_table(joinExpr, rootQuery->rtable);
                 isMatch = isMatch && (FindRte(leftRte->relid, matViewRtable) != NULL &&
                                           FindRte(rightRte->relid, matViewRtable) != NULL ||
                                       AreQualsMatch(matViewTargetList, matViewRtable,
                                                     joinExpr->quals, rootQuery->rtable));
-                if (isMatch)
-                {
-                    elog(
-                        LOG, "IsFromClauseMatchRecurs: found match for %s %s %s",
-                        leftRte->eref->aliasname, joinTag, rightRte->eref->aliasname);
-                }
-                else
-                {
-                    elog(
-                        LOG, "IsFromClauseMatchRecurs: no match found for %s %s %s",
-                        leftRte->eref->aliasname, joinTag, rightRte->eref->aliasname);
-                }
             }
-        }
-        else if (IsA(queryNode, RangeTblRef))
-        {
-            //            RangeTblRef *rtRef = (RangeTblRef *) queryNode;
-            //            RangeTblEntry *rte = rt_fetch(rtRef->rtindex, rootQuery->rtable);
         }
         else if (IsA(queryNode, RangeTblEntry))
         {
-            elog(
-                WARNING, "IsFromClauseMatchRecurs: Found RangeTblEntry in join analysis");
+            elog(WARNING, "IsFromClauseMatchRecurs: Found RangeTblEntry in join analysis");
         }
         else if (IsA(queryNode, FromExpr))
         {
-            elog(
-                WARNING, "IsFromClauseMatchRecurs: Found FromExpr in recursive join analysis");
+            elog(WARNING, "IsFromClauseMatchRecurs: Found FromExpr in recursive join analysis");
         }
     }
 
@@ -551,33 +481,33 @@ bool AreQualsMatch(List *matViewTargetList, List *matViewRtable, List *quals,
 
             switch (nodeTag(expr))
             {
-            case T_OpExpr:
-            {
-                Expr *argOne, *argTwo;
-                OpExpr *opExpr = (OpExpr *)expr;
+                case T_OpExpr:
+                {
+                    Expr *argOne, *argTwo;
+                    OpExpr *opExpr = (OpExpr *)expr;
 
-                if (list_length(opExpr->args) == 2)
-                {
-                    argOne = linitial(opExpr->args);
-                    argTwo = lsecond(opExpr->args);
-                    isMatch = IsExprRTEInMatView(argOne, queryRtable,
-                                                 matViewRtable) &&
-                                  IsExprMatch(argOne, queryRtable,
-                                              matViewTargetList, matViewRtable) ||
-                              IsExprRTEInMatView(argTwo, queryRtable,
-                                                 matViewRtable) &&
-                                  IsExprMatch(argTwo, queryRtable, matViewTargetList,
-                                              matViewRtable);
+                    if (list_length(opExpr->args) == 2)
+                    {
+                        argOne = linitial(opExpr->args);
+                        argTwo = lsecond(opExpr->args);
+                        isMatch = IsExprRTEInMatView(argOne, queryRtable,
+                                                    matViewRtable) &&
+                                    IsExprMatch(argOne, queryRtable,
+                                                matViewTargetList, matViewRtable) ||
+                                IsExprRTEInMatView(argTwo, queryRtable,
+                                                    matViewRtable) &&
+                                    IsExprMatch(argTwo, queryRtable, matViewTargetList,
+                                                matViewRtable);
+                    }
+                    else
+                    {
+                        elog(WARNING, "AreQualsMatch expected OpExpr with 2 arguments");
+                    }
+                    break;
                 }
-                else
-                {
-                    elog(WARNING, "AreQualsMatch expected OpExpr with 2 arguments");
-                }
-                break;
-            }
-            default:
-                elog(WARNING, "AreQualsMatch found unsupported Expr type");
-                isMatch = false;
+                default:
+                    elog(WARNING, "AreQualsMatch found unsupported Expr type");
+                    isMatch = false;
             }
         }
     }
@@ -608,15 +538,14 @@ bool AreQualsEqual(List *targetQuals, List *targetRtable, List *otherQuals,
                                                            otherQualCell->next)
             {
                 foundMatch = AreExprsEqual((Expr *)lfirst(targetQualCell),
-                                           targetRtable, (Expr *)lfirst(otherQualCell), otherRtable);
+                                           targetRtable,
+                                           (Expr *)lfirst(otherQualCell),
+                                           otherRtable);
             }
 
             isMatch = foundMatch;
         }
     }
-
-    elog(LOG, "AreQualsEqual: found match? %s",
-         isMatch ? "true" : "false");
 
     return isMatch;
 }
@@ -629,8 +558,11 @@ bool AreQualsEqual(List *targetQuals, List *targetRtable, List *otherQuals,
  *   if both clauses are exactly the same, e.g. they both group on the same
  *   TargetEntries.
  */
-bool IsGroupByClauseMatch(List *queryGroupClause, List *queryTargetList,
-                          List *queryRtable, List *matViewGroupClause, List *matViewTargetList,
+bool IsGroupByClauseMatch(List *queryGroupClause,
+                          List *queryTargetList,
+                          List *queryRtable,
+                          List *matViewGroupClause,
+                          List *matViewTargetList,
                           List *matViewRtable)
 {
     ListCell *queryGroupCell, *matViewGroupCell;
@@ -669,90 +601,80 @@ bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
     {
         switch (nodeTag(exprOne))
         {
-        case T_OpExpr:
-        {
-            OpExpr *opExprOne = (OpExpr *)exprOne;
-            OpExpr *opExprTwo = (OpExpr *)exprTwo;
-
-            if (opExprOne->opno == opExprTwo->opno && list_length(opExprOne->args) == list_length(opExprTwo->args))
+            case T_OpExpr:
             {
-                if (list_length(opExprOne->args) == 2)
-                {
-                    equal = AreExprsEqual(linitial(opExprOne->args),
-                                          rtableOne, linitial(opExprTwo->args), rtableTwo) &&
-                            AreExprsEqual(lsecond(opExprOne->args),
-                                          rtableOne, lsecond(opExprTwo->args), rtableTwo);
+                OpExpr *opExprOne = (OpExpr *)exprOne;
+                OpExpr *opExprTwo = (OpExpr *)exprTwo;
 
-                    // Commutative operation, so we need to check if one
-                    //  OpExpr is the reverse of the other
-                    if (!equal && opExprOne->opno == EQ_OID)
+                if (opExprOne->opno == opExprTwo->opno &&
+                    list_length(opExprOne->args) == list_length(opExprTwo->args))
+                {
+                    if (list_length(opExprOne->args) == 2)
                     {
                         equal = AreExprsEqual(linitial(opExprOne->args),
-                                              rtableOne, lsecond(opExprTwo->args), rtableTwo) &&
+                                            rtableOne, linitial(opExprTwo->args), rtableTwo) &&
                                 AreExprsEqual(lsecond(opExprOne->args),
-                                              rtableOne, linitial(opExprTwo->args),
-                                              rtableTwo);
+                                            rtableOne, lsecond(opExprTwo->args), rtableTwo);
+
+                        /*
+                        * Commutative operation, so we need to check if one
+                        * OpExpr is the reverse of the other
+                        */
+                        if (!equal && opExprOne->opno == EQ_OID)
+                        {
+                            equal = AreExprsEqual(linitial(opExprOne->args),
+                                                rtableOne, lsecond(opExprTwo->args), rtableTwo) &&
+                                    AreExprsEqual(lsecond(opExprOne->args),
+                                                rtableOne, linitial(opExprTwo->args),
+                                                rtableTwo);
+                        }
+                    }
+                    /* Only one arg in each OpExpr */
+                    else
+                    {
+                        equal = AreExprsEqual(linitial(opExprOne->args),
+                                            rtableOne, linitial(opExprTwo->args), rtableTwo);
                     }
                 }
-                // Only one arg in each OpExpr
-                else
+
+                break;
+            }
+            case T_Var:
+            {
+                Var *varOne = (Var *)exprOne;
+                Var *varTwo = (Var *)exprTwo;
+                RangeTblEntry *varRteOne = rt_fetch(varOne->varno, rtableOne);
+                RangeTblEntry *varRteTwo = rt_fetch(varTwo->varno, rtableTwo);
+                equal = varRteOne->relid == varRteTwo->relid && varOne->varattno == varTwo->varattno;
+                break;
+            }
+            case T_Aggref:
+            {
+                ListCell *argCellOne, *argCellTwo;
+                Aggref *aggrefOne = (Aggref *)exprOne;
+                Aggref *aggrefTwo = (Aggref *)exprTwo;
+                equal = aggrefOne->aggfnoid == aggrefTwo->aggfnoid &&
+                    aggrefOne->args != NIL && aggrefTwo->args != NIL &&
+                    aggrefOne->args->length == aggrefTwo->args->length;
+
+                if (equal)
                 {
-                    equal = AreExprsEqual(linitial(opExprOne->args),
-                                          rtableOne, linitial(opExprTwo->args), rtableTwo);
+                    argCellOne = list_head(aggrefOne->args);
+                    argCellTwo = list_head(aggrefTwo->args);
+
+                    while (equal && argCellOne != NULL && argCellTwo != NULL)
+                    {
+                        equal = AreExprsEqual(
+                            lfirst_node(TargetEntry, argCellOne)->expr, rtableOne,
+                            lfirst_node(TargetEntry, argCellTwo)->expr, rtableTwo);
+                        argCellOne = argCellOne->next;
+                        argCellTwo = argCellTwo->next;
+                    }
                 }
+                break;
             }
-
-            break;
-        }
-        case T_Var:
-        {
-            Var *varOne = (Var *)exprOne;
-            Var *varTwo = (Var *)exprTwo;
-            RangeTblEntry *varRteOne = rt_fetch(varOne->varno, rtableOne);
-            RangeTblEntry *varRteTwo = rt_fetch(varTwo->varno, rtableTwo);
-            equal = varRteOne->relid == varRteTwo->relid && varOne->varattno == varTwo->varattno;
-            if (equal)
-            {
-                elog(LOG, "AreExprsEqual: found match for %s.%s == %s.%s",
-                     varRteOne->eref->aliasname, get_colname(varRteOne, varOne),
-                     varRteTwo->eref->aliasname, get_colname(varRteTwo, varTwo));
-            }
-            else
-            {
-                elog(
-                    LOG, "AreExprsEqual: did not find match for %s.%s and %s.%s",
-                    varRteOne->eref->aliasname, get_colname(varRteOne, varOne),
-                    varRteTwo->eref->aliasname, get_colname(varRteTwo, varTwo));
-            }
-            break;
-        }
-        case T_Aggref:
-        {
-            ListCell *argCellOne, *argCellTwo;
-            Aggref *aggrefOne = (Aggref *)exprOne;
-            Aggref *aggrefTwo = (Aggref *)exprTwo;
-            equal = aggrefOne->aggfnoid == aggrefTwo->aggfnoid && aggrefOne->args != NIL && aggrefTwo->args != NIL && aggrefOne->args->length == aggrefTwo->args->length;
-
-            if (equal)
-            {
-                argCellOne = list_head(aggrefOne->args);
-                argCellTwo = list_head(aggrefTwo->args);
-
-                while (equal && argCellOne != NULL && argCellTwo != NULL)
-                {
-                    equal = AreExprsEqual(
-                        lfirst_node(TargetEntry, argCellOne)->expr, rtableOne,
-                        lfirst_node(TargetEntry, argCellTwo)->expr, rtableTwo);
-                    argCellOne = argCellOne->next;
-                    argCellTwo = argCellTwo->next;
-                }
-            }
-            break;
-        }
-        default:
-            elog(
-                LOG, "AreTargetEntriesEqual found unrecognized nodeTag; returning false");
-            equal = false;
+            default:
+                equal = false;
         }
     }
 

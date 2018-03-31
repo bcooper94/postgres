@@ -25,8 +25,7 @@
 #include "utils/guc_tables.h"
 
 #ifdef PG_MODULE_MAGIC
-PG_MODULE_MAGIC
-;
+PG_MODULE_MAGIC;
 #endif
 
 #define MAX_QUERY_RETRY_COUNT 3
@@ -57,23 +56,23 @@ static bool isCollectingQueries = true;
 
 static bool isAutomatviewsReady = false;
 
-// Internal state initialization functions
+/* Internal state initialization functions */
 static void PopulateUserTables();
 static void HandlePopulateUserTables(SPITupleTable *tuptable,
-    int64 processedCount);
+                                     int64 processedCount);
 
-// Query execution functions
+/* Query execution functions */
 static OutstandingQuery *CreateOutstandingQuery(char *query, int tupleCount,
-    void (*callback)(SPITupleTable *, int64));
+                                                void (*callback)(SPITupleTable *, int64));
 static void AddOutstandingQuery(OutstandingQuery *query);
 
-// Query stats functions
+/* Query stats functions */
 static QueryPlanStats *CreateQueryPlanStats(Query *query, PlannedStmt *plan);
 
-// MatView selection functions
+/* MatView selection functions */
 static List *GetMatchingMatViews(Query *query);
 
-// MatView generation operations
+/* MatView generation operations */
 static int64 ExecuteOutstandingQuery(OutstandingQuery *query);
 static int64 CreateMaterializedView(char *viewName, char *selectQuery);
 static void CreateRelevantMatViews();
@@ -88,9 +87,9 @@ void InitializeAutomatviewModule()
     {
         if (AutoMatViewContext == NULL)
         {
-            AutoMatViewContext = AllocSetContextCreate((MemoryContext) NULL,
-                "AutoMatViewContext",
-                ALLOCSET_DEFAULT_SIZES);
+            AutoMatViewContext = AllocSetContextCreate((MemoryContext)NULL,
+                                                       "AutoMatViewContext",
+                                                       ALLOCSET_DEFAULT_SIZES);
         }
 
         MemoryContext oldContext = SwitchToAutoMatViewContext();
@@ -108,9 +107,9 @@ int GetTrainingSampleCount()
     if (trainingSampleCountVal != NULL)
     {
         trainingSampleCount = strtol(trainingSampleCountVal,
-                                     trainingSampleCountVal + strlen(trainingSampleCountVal), 10);
+                                     trainingSampleCountVal +
+                                        strlen(trainingSampleCountVal), 10);
         pfree(trainingSampleCountVal);
-        elog(LOG, "GetTrainingSampleCount: sampleCount=%d", trainingSampleCount);
     }
 
     return trainingSampleCount;
@@ -124,14 +123,14 @@ void PopulateUserTables()
 {
     static char *getTablesQuery =
         "SELECT n.nspname, c.relname, cast(c.oid as varchar(32)) "
-            "FROM pg_catalog.pg_class c "
-            "LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE c.relkind IN ('r','p','') "
-            "AND n.nspname <> 'pg_catalog' "
-            "AND n.nspname <> 'information_schema' "
-            "AND n.nspname !~ '^pg_toast' "
-            "AND pg_catalog.pg_table_is_visible(c.oid) "
-            "ORDER BY 1,2;";
+        "FROM pg_catalog.pg_class c "
+        "LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE c.relkind IN ('r','p','') "
+        "AND n.nspname <> 'pg_catalog' "
+        "AND n.nspname <> 'information_schema' "
+        "AND n.nspname !~ '^pg_toast' "
+        "AND pg_catalog.pg_table_is_visible(c.oid) "
+        "ORDER BY 1,2;";
     AddOutstandingQuery(
         CreateOutstandingQuery(getTablesQuery, 0, &HandlePopulateUserTables));
 }
@@ -155,17 +154,16 @@ void HandlePopulateUserTables(SPITupleTable *tuptable, int64 processedCount)
             strcpy(tableNameBuf, SPI_getvalue(tuple, tupDesc, 2));
             strcpy(relidBuf, SPI_getvalue(tuple, tupDesc, 3));
             AddUserTable(strtol(relidBuf, relidBuf + 32, 10), schemaBuf,
-                tableNameBuf);
+                         tableNameBuf);
         }
 
         isAutomatviewsReady = true;
-        elog(LOG, "Automatviews is now ready to collect queries");
         MemoryContextSwitchTo(oldContext);
     }
 }
 
 OutstandingQuery *CreateOutstandingQuery(char *query, int tupleCount,
-    void (*callback)(SPITupleTable *, int64))
+                                         void (*callback)(SPITupleTable *, int64))
 {
     OutstandingQuery *outstandingQuery = palloc(sizeof(OutstandingQuery));
     outstandingQuery->query = makeStringInfo();
@@ -195,31 +193,19 @@ bool ExecuteFirstOutstandingQuery()
 {
     bool executedQuery = false;
 
-    elog(
-    LOG, "ExecuteFirstOustandingQuery: checking for outstanding queries...");
     if (list_length(outstandingQueries) > 0)
     {
-        OutstandingQuery *query = (OutstandingQuery *) linitial(
+        OutstandingQuery *query = (OutstandingQuery *)linitial(
             outstandingQueries);
-        elog(
-            LOG, "ExecuteFirstOustandingQuery: found outstanding query %p...", query);
 
         if (query != NULL && query->retryCount < MAX_QUERY_RETRY_COUNT)
         {
-            elog(
-                LOG, "ExecuteFirstOustandingQuery: executing %s", query->query->data);
             query->retryCount++;
             executedQuery = ExecuteOutstandingQuery(query) >= 0;
 
             if (executedQuery || query->retryCount >= MAX_QUERY_RETRY_COUNT)
             {
                 outstandingQueries = list_delete_first(outstandingQueries);
-            }
-            if (executedQuery && !isAutomatviewsReady)
-            {
-                // First outstanding query is initialization
-                isAutomatviewsReady = true;
-                elog(LOG, "Automatview is ready to collect queries");
             }
         }
     }
@@ -257,9 +243,8 @@ void AddQuery(Query *query, PlannedStmt *plannedStatement)
 
     if (IsQueryForUserTables(query) && CanQueryBeOptimized(query))
     {
-        elog(LOG, "Adding query to stored queries list");
         queryPlanStatsList = lappend(queryPlanStatsList,
-            CreateQueryPlanStats(query, plannedStatement));
+                                     CreateQueryPlanStats(query, plannedStatement));
 
         if (queryPlanStatsList->length >= GetTrainingSampleCount())
         {
@@ -276,16 +261,11 @@ int64 ExecuteOutstandingQuery(OutstandingQuery *query)
     int64 proc;
     int ret = -1;
 
-    elog(LOG, "ExecuteQuery: executing %s", query);
     int connectSuccess = SPI_connect();
-    elog(
-    LOG, "ExecuteSPIQuery: SPI_connect returned %d", connectSuccess);
 
     if (connectSuccess == SPI_OK_CONNECT)
     {
-        elog(LOG, "ExecuteSPIQuery: successfully connected. Executing query...");
         ret = SPI_execute(query->query->data, false, query->tupleCount);
-        elog(LOG, "ExecuteSPIQuery: finished SPI_exec...");
 
         if (query->callback != NULL)
         {
@@ -298,7 +278,6 @@ int64 ExecuteOutstandingQuery(OutstandingQuery *query)
     }
 
     SPI_finish();
-
     return ret;
 }
 
@@ -309,22 +288,12 @@ int64 CreateMaterializedView(char *viewName, char *selectQuery)
     char resultQuery[1000];
 
     sprintf(resultQuery, "CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS %s;",
-        viewName, selectQuery);
-    elog(LOG, "CreateMaterializedView: %s", resultQuery);
+            viewName, selectQuery);
+    elog(INFO, "CreateMaterializedView: %s", resultQuery);
 
     SPI_connect();
     ret = SPI_exec(resultQuery, 0);
     processed = SPI_processed;
-
-    if (ret > 0 && SPI_tuptable != NULL)
-    {
-        elog(LOG, "Found returned tuples from SPI_tuptable");
-    }
-    else
-    {
-        elog(LOG, "No returned tuples in SPI_tuptable");
-    }
-
     SPI_finish();
 
     return processed;
@@ -348,24 +317,22 @@ void CreateRelevantMatViews()
 
         if (list_length(prunedQueries) > 0)
         {
-            foreach(queryCell, prunedQueries)
+            foreach (queryCell, prunedQueries)
             {
                 query = lfirst_node(Query, queryCell);
-                // We don't want the WHERE clause included in created materialized views
+                /* We don't want the WHERE clause included in
+                    created materialized views */
                 newMatView = UnparseQuery(query, false);
                 PopulateMatViewRenamedRTable(newMatView);
                 CreateMaterializedView(newMatView->name,
-                    newMatView->selectQuery);
+                                       newMatView->selectQuery);
                 createdMatViews = list_append_unique(createdMatViews,
-                    newMatView);
+                                                     newMatView);
             }
 
             list_free(prunedQueries);
         }
     }
-
-    elog(LOG, "Created %d materialized views based on given query workload",
-    createdMatViews != NIL ? createdMatViews->length : 0);
 }
 
 void PopulateMatViewRenamedRTable(MatView *matView)
@@ -383,11 +350,11 @@ void PopulateMatViewRenamedRTable(MatView *matView)
     renamedRte->eref->aliasname = pstrdup(matView->name);
     renamedRte->relid = 0;
 
-    foreach(targetEntryCell, matView->renamedTargetList)
+    foreach (targetEntryCell, matView->renamedTargetList)
     {
         targetEntry = lfirst_node(TargetEntry, targetEntryCell);
         newColnames = list_append_unique(newColnames,
-            makeString(pstrdup(targetEntry->resname)));
+                                         makeString(pstrdup(targetEntry->resname)));
         SetVarattno(targetEntry->expr, varattno++);
     }
 
@@ -396,8 +363,7 @@ void PopulateMatViewRenamedRTable(MatView *matView)
 
     char targetListBuf[QUERY_BUFFER_SIZE];
     UnparseTargetList(matView->renamedTargetList, matView->renamedRtable, false,
-        targetListBuf, QUERY_BUFFER_SIZE);
-    elog(LOG, "Unparsed renamed targetList: %s", targetListBuf);
+                      targetListBuf, QUERY_BUFFER_SIZE);
 }
 
 /**
@@ -421,9 +387,9 @@ List *GetCostlyQueries(double costCutoffRatio)
     index = 0;
     planCosts = palloc(sizeof(double) * queryPlanStatsList->length);
 
-    foreach(planCell, queryPlanStatsList)
+    foreach (planCell, queryPlanStatsList)
     {
-        stats = (QueryPlanStats *) lfirst(planCell);
+        stats = (QueryPlanStats *)lfirst(planCell);
 
         if (stats != NULL)
         {
@@ -440,23 +406,12 @@ List *GetCostlyQueries(double costCutoffRatio)
     {
         if (planCosts[index] >= costCutoff)
         {
-            stats = (QueryPlanStats *) list_nth(queryPlanStatsList, index);
+            stats = (QueryPlanStats *)list_nth(queryPlanStatsList, index);
             costliestQueryPlans = lappend(costliestQueryPlans, stats);
         }
     }
 
     pfree(planCosts);
-
-    if (costliestQueryPlans != NIL)
-    {
-        elog(
-            LOG, "GetCostlyQueries found %d costly queries", costliestQueryPlans->length);
-    }
-    else
-    {
-        elog(LOG, "GetCostlyQueries found no costly queries");
-    }
-
     return costliestQueryPlans;
 }
 
@@ -474,9 +429,9 @@ List *GenerateInterestingQueries(List *queryPlanStats)
 
     interestingQueries = NIL;
 
-    foreach(queryStatsCell, queryPlanStats)
+    foreach (queryStatsCell, queryPlanStats)
     {
-        stats = (QueryPlanStats *) lfirst(queryStatsCell);
+        stats = (QueryPlanStats *)lfirst(queryStatsCell);
         interestingQueries = lappend(interestingQueries, stats->query);
     }
 
@@ -508,20 +463,18 @@ List *PruneQueries(List *queryPlans)
             while (targetQueryCell != NULL)
             {
                 doDeleteTargetQuery = false;
-                targetQuery = (Query *) lfirst(targetQueryCell);
+                targetQuery = (Query *)lfirst(targetQueryCell);
 
                 for (otherQueryCell = list_head(queryPlans);
                      otherQueryCell != NULL;
                      otherQueryCell = otherQueryCell->next)
                 {
-                    otherQuery = (Query *) lfirst(otherQueryCell);
+                    otherQuery = (Query *)lfirst(otherQueryCell);
 
-                    if (targetQuery != otherQuery && IsQuerySubsetOfOtherQuery(targetQuery,
-                        otherQuery, false))
+                    if (targetQuery != otherQuery &&
+                        IsQuerySubsetOfOtherQuery(targetQuery, otherQuery, false))
                     {
                         MatView *toDelete = UnparseQuery(targetQuery, false);
-                        elog(LOG, "PruneQueries: breaking out of inner loop to prune query=%s",
-                            toDelete->selectQuery);
                         FreeMatView(toDelete);
                         doDeleteTargetQuery = true;
                         queriesPruned++;
@@ -532,19 +485,11 @@ List *PruneQueries(List *queryPlans)
                 targetQueryCell = lnext(targetQueryCell);
                 if (doDeleteTargetQuery)
                 {
-                    elog(LOG, "PruneQueries: pruning target Query %p",
-                        targetQuery);
                     list_delete(queryPlans, targetQuery);
                 }
             }
-
-            elog(LOG, "PruneQueries: pruned %d queries in one iteration",
-                queriesPruned);
         } while (queriesPruned > 0);
     }
-
-    elog(LOG, "PruneQueries: pruned down to %d queries",
-        list_length(queryPlans));
 
     return queryPlans;
 }
@@ -570,15 +515,12 @@ MatView *GetBestMatViewMatch(Query *query)
 
     if (IsQueryForUserTables(query) && CanQueryBeOptimized(query))
     {
-        elog(LOG, "GetBestMatViewMatch: finding best matching view");
         matchingMatViews = GetMatchingMatViews(query);
 
         if (list_length(matchingMatViews) > 0)
         {
-            // Choose the first match for now
-            elog(LOG, "GetBestMatViewMatch choosing first MatView");
-            bestMatch = (MatView *) linitial(matchingMatViews);
-            elog(LOG, "GetBestMatViewMatch chose first MatView: %p", bestMatch);
+            /* Choose the first match for now */
+            bestMatch = (MatView *)linitial(matchingMatViews);
         }
     }
 
@@ -599,18 +541,15 @@ List *GetMatchingMatViews(Query *query)
 
     matchingViews = NIL;
 
-    foreach(viewCell, createdMatViews)
+    foreach (viewCell, createdMatViews)
     {
-        matView = (MatView *) lfirst(viewCell);
+        matView = (MatView *)lfirst(viewCell);
 
         if (DoesQueryMatchMatView(query, matView->baseQuery))
         {
             matchingViews = list_append_unique(matchingViews, matView);
         }
     }
-
-    elog(LOG, "Found %d matching materialized views for Query",
-    matchingViews != NIL ? matchingViews->length : 0);
 
     return matchingViews;
 }

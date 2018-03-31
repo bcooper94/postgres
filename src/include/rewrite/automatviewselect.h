@@ -1,8 +1,8 @@
 /*
- * automatviewselect.h
+ * AutoMatViewSelect module's primary external API.
  *
  *  Created on: Dec 13, 2017
- *      Author: brandon
+ *      Author: Brandon Cooper
  */
 
 #ifndef AUTOMATVIEWSELECT_H

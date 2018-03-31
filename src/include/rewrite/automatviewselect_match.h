@@ -1,5 +1,6 @@
 /*
- * automatviewselect module's API for matching incoming queries to generated MatViews.
+ * AutoMatViewSelect module for matching incoming
+ *  queries to generated MatViews.
  *
  * NOTE: All functions defined here assume the current
  *  MemoryContext is the AutoMatViewContext.
@@ -26,11 +27,11 @@ extern bool IsQueryForUserTables(Query *query);
 extern bool DoesQueryMatchMatView(Query *query, Query *matViewQuery);
 
 extern bool IsQuerySubsetOfOtherQuery(Query *targetQuery, Query *otherQuery,
-    bool includeWhereClause);
+                                      bool includeWhereClause);
 
 extern bool CanQueryBeOptimized(Query *query);
 
 extern bool AreExprsEqual(Expr *exprOne, List *rtableOne, Expr *exprTwo,
-    List *rtableTwo);
+                          List *rtableTwo);
 
 #endif /* AUTOMATVIEWSELECT_MATCH_H */

@@ -905,11 +905,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 	bool		use_implicit_block;
 	char		msec_str[32];
 
-
-
-
-//	elog(LOG, "exec_simple_query executing %s", query_string);
-
 	/*
 	 * Report query to various monitoring facilities.
 	 */
@@ -933,7 +928,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 	 * one of those, else bad things will happen in xact.c. (Note that this
 	 * will normally change current memory context.)
 	 */
-//	elog(LOG, "Starting xact command");
 	start_xact_command();
 
 	/*
@@ -942,7 +936,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 	 * statement and portal; this ensures we recover any storage used by prior
 	 * unnamed operations.)
 	 */
-//	elog(LOG, "Dropping unnamed statements");
 	drop_unnamed_stmt();
 
 	/*
@@ -954,7 +947,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 	 * Do basic parsing of the query or queries (this should be safe even if
 	 * we are in aborted transaction state!)
 	 */
-//	elog(LOG, "Parsing query_string");
 	parsetree_list = pg_parse_query(query_string);
 
 	/* Log immediately if dictated by log_statement */
@@ -1007,7 +999,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 
 		set_ps_display(commandTag, false);
 
-//		elog(LOG, "Beginning command");
 		BeginCommand(commandTag, dest);
 
 		/*
@@ -1027,7 +1018,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 					 errdetail_abort()));
 
 		/* Make sure we are in a transaction command */
-//		elog(LOG, "Starting new xact command");
 		start_xact_command();
 
 		/*
@@ -1048,7 +1038,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 		 */
 		if (analyze_requires_snapshot(parsetree))
 		{
-//			elog(LOG, "Pushed active snapshot");
 			PushActiveSnapshot(GetTransactionSnapshot());
 			snapshot_set = true;
 		}
@@ -1062,15 +1051,14 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 		oldcontext = MemoryContextSwitchTo(MessageContext);
 		ExecuteFirstOutstandingQuery();
 
-//		elog(LOG, "Analyzing and rewriting query");
 		querytree_list = pg_analyze_and_rewrite(parsetree, query_string,
 												NULL, 0, NULL);
 
-		if (attempt_rewrite && IsAutomatviewReady() && !IsCollectingQueries()
-						&& parsetree_list->length == 1 &&
-						querytree_list->length == 1)
+		if (attempt_rewrite && IsAutomatviewReady() &&
+			!IsCollectingQueries() &&
+			parsetree_list->length == 1 &&
+			querytree_list->length == 1)
 		{
-//			elog(LOG, "Attempting to find matching MatViews for query...");
 		    Query *queryCopy;
 		    MemoryContext prevContext;
 			ListCell *queryList;
@@ -1085,36 +1073,28 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 
 				if (matView != NULL)
 				{
-//					elog(LOG, "Found matching MatView and now rewriting Query...");
 					char *newQuery = RewriteQuery(queryCopy, matView);
 					char *copiedQuery = MemoryContextStrdup(oldcontext, newQuery);
 					pfree(newQuery);
 					elog(INFO, "Rewritten query: %s", newQuery);
 
-					//				elog(LOG, "Switching back to old context...");
 					MemoryContextSwitchTo(oldcontext);
 					pfree(query);
-					elog(LOG, "Rewrote %s to:\n %s", query_string, copiedQuery);
-					// TODO: Do we need to do any other cleanup?
+					/* TODO: Do we need to do any other cleanup? */
 
 					if (snapshot_set)
 					{
-						//					elog(LOG, "Popping active snapshot before executing rewritten query");
 						PopActiveSnapshot();
 						snapshot_set = false;
 					}
 
 					if (use_implicit_block)
 					{
-//						elog(LOG, "Ending implicit transaction block");
 						EndImplicitTransactionBlock();
 					}
 
-					//				elog(LOG, "Finishing current transaction before executing rewritten query...");
 					finish_xact_command();
 					drop_unnamed_stmt();
-
-					elog(LOG, "Executing rewritten query...");
 					return exec_simple_query(copiedQuery, false);
 				}
 				else
@@ -1131,7 +1111,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 			}
 		}
 
-//		elog(LOG, "Planning queries");
 		plantree_list = pg_plan_queries(querytree_list,
 										CURSOR_OPT_PARALLEL_OK, NULL);
 
@@ -1146,7 +1125,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 		 * Create unnamed portal to run the query or queries in. If there
 		 * already is one, silently drop it.
 		 */
-//		elog(LOG, "Creating portal");
 		portal = CreatePortal("", true, true);
 		/* Don't display the portal in pg_cursors */
 		portal->visible = false;
@@ -1156,7 +1134,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 		 * we are passing here is in MessageContext, which will outlive the
 		 * portal anyway.
 		 */
-//		elog(LOG, "Defining portal query");
 		PortalDefineQuery(portal,
 						  NULL,
 						  query_string,
@@ -1167,7 +1144,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 		/*
 		 * Start the portal.  No parameters here.
 		 */
-//		elog(LOG, "Starting query portal");
 		PortalStart(portal, NULL, 0, InvalidSnapshot);
 
 		/*
@@ -1207,7 +1183,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 		/*
 		 * Run the portal to completion, and then drop it (and the receiver).
 		 */
-//		elog(LOG, "Running the portal");
 		(void) PortalRun(portal,
 						 FETCH_ALL,
 						 true,	/* always top level */
@@ -1222,7 +1197,6 @@ exec_simple_query(const char *query_string, bool attempt_rewrite)
 
 		if (lnext(parsetree_item) == NULL)
 		{
-//			elog(LOG, "No more queries in parsetree, ending transaction");
 			/*
 			 * If this is the last parsetree of the query string, close down
 			 * transaction statement before reporting command-complete.  This

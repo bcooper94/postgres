@@ -1,11 +1,11 @@
 /*
- * automatviewselect_utils.h
+ * AutoMatViewSelect module utilities.
  *
  * NOTE: All functions defined here assume the current
  *  MemoryContext is the AutoMatViewContext.
  *
  *  Created on: Mar 9, 2018
- *      Author: brandon
+ *      Author: Brandon Cooper
  */
 
 #ifndef AUTOMATVIEWSELECT_UTILS_H
@@ -24,6 +24,10 @@
 
 #define EQ_OID 96
 
+/*
+* See addRangeTableEntryForJoin in src/backend/parser/parse_relation.c:1858
+*  for how RTEs and join RTEs are added to the Query's list of RTEs
+*/
 #define left_join_table(joinExpr, rangeTables) \
     (rt_fetch(joinExpr->rtindex - 2, rangeTables))
 
@@ -37,8 +41,8 @@ typedef struct MatView
 {
     char *name;
     char *selectQuery;
-    Query *baseQuery; // Query object which this MatView is based on
-    List *renamedTargetList; // List (of TargetEntry) with renamed TargetEntries
+    Query *baseQuery; /* Query object which this MatView is based on */
+    List *renamedTargetList; /* List (of TargetEntry) with renamed TargetEntries */
     List *renamedRtable;
 } MatView;
 

@@ -46,8 +46,7 @@ double GetPlanCost(Plan *plan)
 
     if (plan != NULL && plan->targetlist != NIL)
     {
-        cost = plan->total_cost + GetPlanCost(plan->lefttree)
-            + GetPlanCost(plan->righttree);
+        cost = plan->total_cost + GetPlanCost(plan->lefttree) + GetPlanCost(plan->righttree);
     }
 
     return cost;
@@ -59,17 +58,17 @@ void SetVarattno(Expr *expr, AttrNumber varattno)
     {
         case T_Var:
         {
-            Var *var = (Var *) expr;
+            Var *var = (Var *)expr;
             var->varattno = varattno;
             break;
         }
         case T_Aggref:
         {
-            Aggref *aggref = (Aggref *) expr;
+            Aggref *aggref = (Aggref *)expr;
             ListCell *argCell;
             TargetEntry *argTE;
 
-            foreach(argCell, aggref->args)
+            foreach (argCell, aggref->args)
             {
                 argTE = lfirst_node(TargetEntry, argCell);
                 SetVarattno(argTE->expr, varattno);
@@ -87,17 +86,17 @@ void SetVarno(Expr *expr, Index varno)
     {
         case T_Var:
         {
-            Var *var = (Var *) expr;
+            Var *var = (Var *)expr;
             var->varno = varno;
             break;
         }
         case T_Aggref:
         {
-            Aggref *aggref = (Aggref *) expr;
+            Aggref *aggref = (Aggref *)expr;
             ListCell *argCell;
             TargetEntry *argTE;
 
-            foreach(argCell, aggref->args)
+            foreach (argCell, aggref->args)
             {
                 argTE = lfirst_node(TargetEntry, argCell);
                 SetVarno(argTE->expr, varno);
@@ -117,7 +116,7 @@ RangeTblEntry *FindRte(Oid relid, List *rtable)
     ListCell *rteCell;
     RangeTblEntry *rte;
 
-    foreach(rteCell, rtable)
+    foreach (rteCell, rtable)
     {
         rte = lfirst_node(RangeTblEntry, rteCell);
 

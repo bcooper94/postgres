@@ -23,8 +23,6 @@ char *RewriteQuery(Query *query, MatView *matView)
 {
     char *rewrittenQuery;
 
-//    elog(LOG, "RewriteQuery called...");
-
     if (matView != NULL)
     {
         RewriteTargetList(query, matView);
@@ -59,28 +57,29 @@ void RewriteTargetList(Query *query, MatView *matView)
 
     if (query->targetList != NIL)
     {
-        // Add MatView's single rtable entry to the end of this Query's rtable so converted references can reference it
+        /*
+         * Add MatView's single rtable entry to the end of this
+         *  Query's rtable so converted references can reference it
+         */
         query->rtable = lappend(query->rtable,
-            copyObject(linitial(matView->renamedRtable)));
+                                copyObject(linitial(matView->renamedRtable)));
 
-        foreach(targetEntryCell, query->targetList)
+        foreach (targetEntryCell, query->targetList)
         {
             matViewTargetListIndex = 0;
             foundMatchingEntry = false;
             queryTargetEntry = lfirst_node(TargetEntry, targetEntryCell);
 
             for (matViewTargetEntryCell = list_head(
-                matView->baseQuery->targetList);
-                !foundMatchingEntry && matViewTargetEntryCell != NULL;
-                matViewTargetEntryCell = matViewTargetEntryCell->next)
+                     matView->baseQuery->targetList);
+                 !foundMatchingEntry && matViewTargetEntryCell != NULL;
+                 matViewTargetEntryCell = matViewTargetEntryCell->next)
             {
                 matViewTargetEntry = lfirst_node(TargetEntry,
-                    matViewTargetEntryCell);
+                                                 matViewTargetEntryCell);
                 foundMatchingEntry = AreExprsEqual(queryTargetEntry->expr,
-                    query->rtable, matViewTargetEntry->expr,
-                    matView->baseQuery->rtable);
-//                elog(LOG, "Found matching TargetEntry? %s",
-//                foundMatchingEntry ? "true" : "false");
+                                                   query->rtable, matViewTargetEntry->expr,
+                                                   matView->baseQuery->rtable);
                 matViewTargetListIndex++;
             }
 
@@ -88,46 +87,32 @@ void RewriteTargetList(Query *query, MatView *matView)
             {
                 matViewTargetEntry = copyObject(
                     list_nth(matView->renamedTargetList,
-                        matViewTargetListIndex - 1));
-                // Set varno of Vars in the replaced expression to reference MatView's rtable entry
+                             matViewTargetListIndex - 1));
+                /*
+                 * Set varno of Vars in the replaced expression to
+                 *  reference MatView's rtable entry
+                 */
                 SetVarno(matViewTargetEntry->expr, query->rtable->length);
 
                 if (IsA(matViewTargetEntry->expr, Var))
                 {
-                    Var *var = (Var *) matViewTargetEntry->expr;
-//                    elog(LOG, "Fetching replaced Var's RangeTblEntry...");
+                    Var *var = (Var *)matViewTargetEntry->expr;
                     RangeTblEntry *replacedRT = rt_fetch(var->varno,
-                        query->rtable);
-//                    if (replacedRT != NULL)
-//                    {
-//                        elog(LOG, "Replaced Var references RTE: %s, colname=%s",
-//                        replacedRT->eref->aliasname,
-//                        get_colname(replacedRT, var));
-//                    }
+                                                         query->rtable);
                 }
-//                elog(LOG, "Found matching MatView TargetEntry for %s with: %s",
-//                queryTargetEntry->resname, matViewTargetEntry->resname);
+
                 newTargetList = lappend(newTargetList, matViewTargetEntry);
             }
             else
             {
-                elog(
-                    LOG, "No matching MatView TargetEntry found. Appending existing TargetEntry");
                 newTargetList = lappend(newTargetList,
-                    copyObject(queryTargetEntry));
+                                        copyObject(queryTargetEntry));
             }
-
         }
     }
 
     list_free(query->targetList);
     query->targetList = newTargetList;
-//    elog(
-//        LOG, "Rewrote targetList. Length=%d", newTargetList != NIL ? newTargetList->length : 0);
-    char rewrittenBuf[QUERY_BUFFER_SIZE];
-    MatView *mview = UnparseTargetList(query->targetList, query->rtable, false,
-        rewrittenBuf, QUERY_BUFFER_SIZE);
-//    elog(LOG, "Rewritten targetList=%s", rewrittenBuf);
 }
 
 /**
@@ -144,17 +129,14 @@ void RewriteJoinTree(Query *query, MatView *matView)
     if (query->jointree != NULL)
     {
         joinListLength = query->jointree->fromlist->length;
-        foreach(fromCell, query->jointree->fromlist)
+        foreach (fromCell, query->jointree->fromlist)
         {
             RewriteJoinTreeRecurs(query, matView, lfirst(fromCell), joinIndex++,
-                joinListLength, &joinCount, &joinsRemoved);
+                                  joinListLength, &joinCount, &joinsRemoved);
         }
 
         if (joinsRemoved == joinCount)
         {
-            elog(
-                LOG, "All existing joins were removed. Setting jointree to single RangeTblRef");
-
             if (query->jointree->quals != NULL)
             {
                 pfree(query->jointree->quals);
@@ -167,17 +149,19 @@ void RewriteJoinTree(Query *query, MatView *matView)
             }
 
             RangeTblRef *matViewRef = makeNode(RangeTblRef);
-            // Set rtindex to query.rtable.length since the MatView RTE was added to the end of query.rtable
+            /*
+             * Set rtindex to query.rtable.length since the MatView RTE
+             *  was added to the end of query.rtable
+             */
             matViewRef->rtindex = query->rtable->length;
             query->jointree->fromlist = list_make1(matViewRef);
         }
-//        elog(LOG, "Successfully rewrote Query join tree");
     }
 }
 
 void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
-    int fromClauseIndex, size_t fromClauseLength, int *joinCount,
-    int *joinsRemoved)
+                           int fromClauseIndex, size_t fromClauseLength, int *joinCount,
+                           int *joinsRemoved)
 {
     RangeTblEntry *joinRte, *leftRte, *rightRte;
 
@@ -186,21 +170,23 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
         if (IsA(node, JoinExpr))
         {
             char *joinTag;
-            JoinExpr *joinExpr = (JoinExpr *) node;
+            JoinExpr *joinExpr = (JoinExpr *)node;
             bool containsLeftRte, containsRightRte;
 
             (*joinCount)++;
 
-            // NOTE: Mixed JOIN ON clauses with table cross products will fail
+            /* NOTE: Mixed JOIN ON clauses with table cross products will fail */
             if (IsA(joinExpr->larg, JoinExpr))
             {
                 RewriteJoinTreeRecurs(rootQuery, matView, joinExpr->larg,
-                    fromClauseIndex, fromClauseLength, joinCount, joinsRemoved);
+                                      fromClauseIndex, fromClauseLength,
+                                      joinCount, joinsRemoved);
             }
             if (IsA(joinExpr->rarg, JoinExpr))
             {
                 RewriteJoinTreeRecurs(rootQuery, matView, joinExpr->rarg,
-                    fromClauseIndex, fromClauseLength, joinCount, joinsRemoved);
+                                      fromClauseIndex, fromClauseLength,
+                                      joinCount, joinsRemoved);
             }
 
             joinRte = rt_fetch(joinExpr->rtindex, rootQuery->rtable);
@@ -212,80 +198,37 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
             if (containsLeftRte && containsRightRte)
             {
                 (*joinsRemoved)++;
-                joinExpr->rtindex = 0; // JoinExpr.rtindex of 0 means no join
-                // Get rid of this join, and have dependent joins consider this a relation
-//                joinRte->rtekind = RTE_RELATION;
-
-                if (leftRte->rtekind == RTE_JOIN)
-                {
-                    elog(
-                        LOG, "Replacing JOIN of leftTable(RTE_JOIN)=%s and rightTable=%s with MatView table=%s",
-                        rt_fetch(joinExpr->rtindex - 3, rootQuery->rtable)->eref->aliasname,
-                        rightRte->eref->aliasname,
-                        ((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
-                }
-                else
-                {
-                    elog(
-                        LOG, "Replacing JOIN of leftTable=%s and rightTable=%s with MatView table=%s",
-                        leftRte->eref->aliasname,
-                        rightRte->eref->aliasname,
-                        ((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
-                }
+                /* Get rid of this join, and have dependent joins consider this a relation */
+                joinExpr->rtindex = 0; /* JoinExpr.rtindex of 0 means no join */
             }
             else if (containsLeftRte)
             {
-                // Preserve the old RTEKind so we don't rewrite "TABLE_NAME_1 JOIN TABLE_NAME_2"
-                //  after the first JOIN ON statement when un-parsing the rewritten query
+                /*
+                 * Preserve the old RTEKind so we don't rewrite "TABLE_NAME_1 JOIN TABLE_NAME_2"
+                 *  after the first JOIN ON statement when un-parsing the rewritten query
+                 */
                 RTEKind oldRTEKind = leftRte->rtekind;
-
-                char *leftRteName = leftRte->eref->aliasname;
-                if (leftRte->rtekind == RTE_JOIN)
-                {
-                    RangeTblEntry *actualLeftRte = rt_fetch(
-                        joinExpr->rtindex - 3, rootQuery->rtable);
-                    leftRteName = actualLeftRte->eref->aliasname;
-
-                }
-                if (joinExpr->larg == NULL && joinExpr->rarg == NULL)
-                {
-                    elog(
-                        LOG, "RewriteJoinTreeRecurs: left and right args of %s JOIN %s is NULL",
-                        leftRteName, rightRte->eref->aliasname);
-                }
-                elog(
-                    LOG, "Replacing leftTable=%s from Query.rtable with %s from MatView",
-                    leftRteName,
-                    ((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
-
                 RewriteQuals(rootQuery->rtable, joinExpr->quals,
-                    list_length(rootQuery->rtable), matView->baseQuery->rtable,
-                    matView->baseQuery->targetList);
+                             list_length(rootQuery->rtable), matView->baseQuery->rtable,
+                             matView->baseQuery->targetList);
                 CopyRte(leftRte, llast(rootQuery->rtable));
                 leftRte->rtekind = oldRTEKind;
             }
-            //  e.g. it is one JoinExpr's leftJoin and the next JoinExpr's rightJoin
+            /*  e.g. it is one JoinExpr's leftJoin and the next JoinExpr's rightJoin */
             else if (containsRightRte)
             {
-                // Preserve the old RTEKind so we don't rewrite "TABLE_NAME_1 JOIN TABLE_NAME_2"
-                //  after the first JOIN ON statement when un-parsing the rewritten query
+                /*
+                 * Preserve the old RTEKind so we don't rewrite "TABLE_NAME_1 JOIN TABLE_NAME_2"
+                 *  after the first JOIN ON statement when un-parsing the rewritten query
+                 */
                 RTEKind oldRTEKind = rightRte->rtekind;
-                elog(
-                    LOG, "Replacing rightTable=%s from Query.rtable with %s from MatView",
-                    rightRte->eref->aliasname,
-                    ((RangeTblEntry *)llast(rootQuery->rtable))->eref->aliasname);
                 RewriteQuals(rootQuery->rtable, joinExpr->quals,
-                    list_length(rootQuery->rtable), matView->baseQuery->rtable,
-                    matView->baseQuery->targetList);
+                             list_length(rootQuery->rtable), matView->baseQuery->rtable,
+                             matView->baseQuery->targetList);
                 CopyRte(rightRte, llast(rootQuery->rtable));
                 rightRte->rtekind = oldRTEKind;
             }
         }
-    }
-    else if (IsA(node, RangeTblRef))
-    {
-//        RangeTblRef *rtRef = (RangeTblRef *) node;
-//        RangeTblEntry *rte = rt_fetch(rtRef->rtindex, rootQuery->rtable);
     }
     else if (IsA(node, RangeTblEntry))
     {
@@ -298,17 +241,17 @@ void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView, Node *node,
 }
 
 void RewriteQuals(List *queryRtable, List *quals, Index targetVarno,
-    List *matViewRtable, List *matViewTargetList)
+                  List *matViewRtable, List *matViewTargetList)
 {
     ListCell *qualCell;
     Expr *expr;
 
     if (quals != NIL)
     {
-        foreach(qualCell, quals)
+        foreach (qualCell, quals)
         {
             RewriteVarReferences(queryRtable, lfirst_node(Expr, qualCell),
-                targetVarno, matViewRtable, matViewTargetList);
+                                 targetVarno, matViewRtable, matViewTargetList);
         }
     }
 }
@@ -317,65 +260,50 @@ void RewriteQuals(List *queryRtable, List *quals, Index targetVarno,
  * Rewrite Var references within the target Expr to reference
  */
 void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
-    List *matViewRtable, List *matViewTargetList)
+                          List *matViewRtable, List *matViewTargetList)
 {
     switch (nodeTag(target))
     {
         case T_OpExpr:
         {
-            OpExpr *opExpr = (OpExpr *) target;
+            OpExpr *opExpr = (OpExpr *)target;
             ListCell *argCell;
-//          elog(LOG, "RewriteVarReferences: found OpExpr");
-            //                  elog(LOG, "Found OpExpr opno=%d, number of args=%d",
-            //                  opExpr->opno,
-            //                  opExpr->args != NULL ? opExpr->args->length : 0);
 
             if (opExpr->args != NULL)
             {
-                foreach(argCell, opExpr->args)
+                foreach (argCell, opExpr->args)
                 {
                     RewriteVarReferences(queryRtable,
-                        lfirst_node(Expr, argCell), targetVarno, matViewRtable,
-                        matViewTargetList);
+                                        lfirst_node(Expr, argCell), targetVarno, matViewRtable,
+                                        matViewTargetList);
                 }
             }
             break;
         }
         case T_BoolExpr:
         {
-            BoolExpr *boolExpr = (BoolExpr *) target;
-            elog(
-                LOG, "RewriteVarReferences: Found boolean expression of type %s with %d args",
-                boolExpr->boolop == AND_EXPR ? "AND" : boolExpr->boolop == OR_EXPR ? "OR" : "NOT",
-                boolExpr->args != NIL ? boolExpr->args->length : 0);
+            BoolExpr *boolExpr = (BoolExpr *)target;
+            elog(WARNING, "RewriteVarReferences does not currently handle BoolOps");
             break;
         }
         case T_Var:
         {
             ListCell *matViewTECell;
             TargetEntry *matViewTE;
-            Var *var = (Var *) target;
+            Var *var = (Var *)target;
             AttrNumber targetEntryIndex = 1;
 
             RangeTblEntry *matViewRte = rt_fetch(targetVarno, queryRtable);
-//            elog(LOG, "RewriteVarReferences: found Var=%s.%s...",
-//            rt_fetch(var->varno, queryRtable)->eref->aliasname,
-//            get_colname(rt_fetch(var->varno, queryRtable), var));
 
-            // Rewrite the Var to reference the MatView if it is in the MatView's targetList
-            foreach(matViewTECell, matViewTargetList)
+            /* Rewrite the Var to reference the MatView if it is in the MatView's targetList */
+            foreach (matViewTECell, matViewTargetList)
             {
                 matViewTE = lfirst_node(TargetEntry, matViewTECell);
                 if (AreExprsEqual(target, queryRtable, matViewTE->expr,
-                    matViewRtable))
+                                matViewRtable))
                 {
-//                    elog(
-//                        LOG, "RewriteVarReferences: rewrote var=%s to reference MatView at varno=%d, varattno=%d",
-//                        get_colname(rt_fetch(var->varno, queryRtable), var), targetVarno, targetEntryIndex);
                     SetVarattno(var, targetEntryIndex);
                     SetVarno(var, targetVarno);
-//                    elog(LOG, "RewriteVarReferences: rewritten var=%s.%s",
-//                    matViewRte->eref->aliasname, get_colname(matViewRte, var));
                 }
                 targetEntryIndex++;
             }
@@ -383,17 +311,18 @@ void RewriteVarReferences(List *queryRtable, Expr *target, Index targetVarno,
         }
         case T_Aggref:
         {
-//            elog(LOG, "RewriteVarReferences: found Aggref");
-            Aggref *aggref = (Aggref *) target;
+            Aggref *aggref = (Aggref *)target;
             ListCell *argCell;
 
             if (aggref->args != NIL)
             {
-                foreach(argCell, aggref->args)
+                foreach (argCell, aggref->args)
                 {
                     RewriteVarReferences(queryRtable,
-                        lfirst_node(Expr, argCell), targetVarno, matViewRtable,
-                        matViewTargetList);
+                                        lfirst_node(Expr, argCell),
+                                        targetVarno,
+                                        matViewRtable,
+                                        matViewTargetList);
                 }
             }
             break;
@@ -416,7 +345,6 @@ void RewriteGroupByClause(Query *query, MatView *matView)
      */
     if (query->groupClause != NIL && matView->baseQuery != NIL)
     {
-//        elog(LOG, "RewriteGroupByClause: removing Query's GROUP clause");
         query->groupClause = NIL;
     }
 }
@@ -465,21 +393,11 @@ bool DoesMatViewContainRTE(RangeTblEntry *rte, MatView *matView)
     bool containsRte = false;
 
     for (rteCell = list_head(matView->baseQuery->rtable);
-        !containsRte && rteCell != NULL; rteCell = rteCell->next)
+         !containsRte && rteCell != NULL; rteCell = rteCell->next)
     {
         matViewRte = lfirst_node(RangeTblEntry, rteCell);
         containsRte = rte->relid == matViewRte->relid;
     }
-
-//    if (containsRte)
-//    {
-//        elog(LOG, "MatView contains RTE=%s: %s",
-//        rte->eref->aliasname, matViewRte->eref->aliasname);
-//    }
-//    else
-//    {
-//        elog(LOG, "MatView does NOT contain RTE=%s", rte->eref->aliasname);
-//    }
 
     return containsRte;
 }

@@ -1,11 +1,12 @@
 /*
- * automatviewselect_rewrite.h
+ * AutoMatViewSelect module for rewriting incoming queries
+ *  to use existing MatViews.
  *
  * NOTE: All functions defined here assume the current
  *  MemoryContext is the AutoMatViewContext.
  *
  *  Created on: Mar 9, 2018
- *      Author: brandon
+ *      Author: Brandon Cooper
  */
 
 #ifndef AUTOMATVIEWSELECT_REWRITE_H
@@ -22,14 +23,14 @@ extern void RewriteTargetList(Query *query, MatView *matView);
 extern void RewriteJoinTree(Query *query, MatView *matView);
 
 extern void RewriteJoinTreeRecurs(Query *rootQuery, MatView *matView,
-    Node *node, int fromClauseIndex, size_t fromClauseLength, int *joinCount,
-    int *joinsRemoved);
+                                  Node *node, int fromClauseIndex, size_t fromClauseLength, int *joinCount,
+                                  int *joinsRemoved);
 
 extern void RewriteQuals(List *queryRtable, List *quals, Index targetVarno,
-    List *matViewRtable, List *matViewTargetList);
+                         List *matViewRtable, List *matViewTargetList);
 
 extern void RewriteVarReferences(List *queryRtable, Expr *target,
-    Index targetVarno, List *matViewRtable, List *matViewTargetList);
+                                 Index targetVarno, List *matViewRtable, List *matViewTargetList);
 
 extern void RewriteGroupByClause(Query *query, MatView *matView);
 
